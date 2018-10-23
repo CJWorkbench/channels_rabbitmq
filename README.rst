@@ -3,10 +3,15 @@ channels_rabbitmq
 
 A Django Channels channel layer that uses RabbitMQ as its backing store.
 
+Installation
+------------
+
+``pip install channels_rabbitmq``
+
 Usage
 -----
 
-Set up the channel layer in your Django settings file like so::
+Then set up the channel layer in your Django settings file like so::
 
     CHANNEL_LAYERS = {
         "default": {
@@ -121,3 +126,15 @@ To add features and fix bugs
 2. Write new tests in ``tests/`` and make sure they fail.
 3. Write new code in ``channels_rabbitmq/`` to make the tests pass.
 4. Submit a pull request.
+
+To deploy
+~~~~~~~~~
+
+Use `semver <https://semver.org/>`_.
+
+1. Change ``__version__`` in ``channels_rabbitmq/__init__.py``.
+2. ``git commit channels/__init__.py -m 'vX.X.X'`` but don't push.
+3. ``git tag vX.X.X``
+4. ``git push --tags``
+
+TravisCI will push to PyPi.
