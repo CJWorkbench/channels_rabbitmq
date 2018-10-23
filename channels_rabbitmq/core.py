@@ -5,6 +5,7 @@ import threading
 import types
 
 from channels.layers import BaseChannelLayer
+
 from .connection import Connection
 
 
@@ -41,9 +42,15 @@ class RabbitmqChannelLayer(BaseChannelLayer):
     disconnect all clients.
     """
 
-    def __init__(self, host="amqp://guest:guest@127.0.0.1/asgi",
-                 local_capacity=100, remote_capacity=100, prefetch_count=10,
-                 expiry=60, group_expiry=86400):
+    def __init__(
+        self,
+        host="amqp://guest:guest@127.0.0.1/asgi",
+        local_capacity=100,
+        remote_capacity=100,
+        prefetch_count=10,
+        expiry=60,
+        group_expiry=86400,
+    ):
         self.host = host
         self.local_capacity = local_capacity
         self.remote_capacity = remote_capacity
@@ -72,12 +79,16 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         rand = "".join(random.choice(string.ascii_letters) for i in range(12))
         queue_name = f"channels_{rand}"
 
-        connection = Connection(loop, self.host, queue_name,
-                                local_capacity=self.local_capacity,
-                                remote_capacity=self.remote_capacity,
-                                prefetch_count=self.prefetch_count,
-                                expiry=self.expiry,
-                                group_expiry=self.group_expiry)
+        connection = Connection(
+            loop,
+            self.host,
+            queue_name,
+            local_capacity=self.local_capacity,
+            remote_capacity=self.remote_capacity,
+            prefetch_count=self.prefetch_count,
+            expiry=self.expiry,
+            group_expiry=self.group_expiry,
+        )
         self._connections[loop] = connection  # assume lock is held
 
         original_impl = loop.close
@@ -141,20 +152,21 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         connection = self._get_connection_for_loop()
         return await connection.receive(channel)
 
-    async def new_channel(self, prefix=''):
+    async def new_channel(self, prefix=""):
         """
         Create a new channel name that can be used by something in our
         process as a specific channel.
         """
         connection = self._get_connection_for_loop()
-        return '!'.join([
-            connection.queue_name,
-            (
-                prefix
-                + "".join(random.choice(string.ascii_letters)
-                          for i in range(12))
-            )
-        ])
+        return "!".join(
+            [
+                connection.queue_name,
+                (
+                    prefix
+                    + "".join(random.choice(string.ascii_letters) for i in range(12))
+                ),
+            ]
+        )
 
     async def group_add(self, group, channel):
         """

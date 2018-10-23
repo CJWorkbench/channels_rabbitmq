@@ -4,8 +4,7 @@ from asgiref.sync import async_to_sync
 from channels.exceptions import ChannelFull
 from channels_rabbitmq.core import RabbitmqChannelLayer
 
-
-HOST = 'amqp://guest:guest@localhost/'
+HOST = "amqp://guest:guest@localhost/"
 
 
 @pytest.mark.asyncio
@@ -15,9 +14,7 @@ async def test_send_receive():
     """
     layer = RabbitmqChannelLayer(host=HOST)
     channel = await layer.new_channel()
-    await layer.send(
-        channel, {"type": "test.message", "text": "Ahoy-hoy!"}
-    )
+    await layer.send(channel, {"type": "test.message", "text": "Ahoy-hoy!"})
     message = await layer.receive(channel)
     assert message["type"] == "test.message"
     assert message["text"] == "Ahoy-hoy!"
@@ -50,8 +47,9 @@ async def test_send_capacity():
     Makes sure we get ChannelFull when our in-memory structure runs out of
     memory.
     """
-    layer = RabbitmqChannelLayer(host=HOST, remote_capacity=1,
-                                 local_capacity=1, prefetch_count=1)
+    layer = RabbitmqChannelLayer(
+        host=HOST, remote_capacity=1, local_capacity=1, prefetch_count=1
+    )
     channel = await layer.new_channel()
     await layer.send(channel, {"type": "test.message1"})  # one queued+acked
     await layer.send(channel, {"type": "test.message2"})  # one unacked
@@ -64,18 +62,18 @@ async def test_send_capacity():
     # Receive the acked message1. This will _eventually_ ack message2. RabbitMQ
     # will have unacked=0, ready=1. This will prompt it to send a new unacked
     # message.
-    assert (await layer.receive(channel))['type'] == 'test.message1'
+    assert (await layer.receive(channel))["type"] == "test.message1"
 
     # Receive message2. This _guarantees_ message2 is acked.
-    assert (await layer.receive(channel))['type'] == 'test.message2'
+    assert (await layer.receive(channel))["type"] == "test.message2"
 
     # Send message5. We're sending and receiving on the same TCP connection, so
     # RabbitMQ is aware that message2 was acked by the time we send message5.
     # That means its queue isn't maxed out any more.
     await layer.send(channel, {"type": "test.message5"})  # one ready
 
-    assert (await layer.receive(channel))['type'] == 'test.message3'
-    assert (await layer.receive(channel))['type'] == 'test.message5'
+    assert (await layer.receive(channel))["type"] == "test.message3"
+    assert (await layer.receive(channel))["type"] == "test.message5"
 
 
 @pytest.mark.asyncio
@@ -85,8 +83,7 @@ async def test_process_local_send_receive():
     """
     layer = RabbitmqChannelLayer(host=HOST)
     channel = await layer.new_channel()
-    await layer.send(channel,
-                     {"type": "test.message", "text": "Local only please"})
+    await layer.send(channel, {"type": "test.message", "text": "Local only please"})
     message = await layer.receive(channel)
     assert message["type"] == "test.message"
     assert message["text"] == "Local only please"
@@ -103,10 +100,9 @@ async def test_process_remote_send_receive():
 
     # Make sure layer2's queue is created. A dummy `send()` will do it, since
     # it only completes after the queue is created.
-    await layer2.send('nonexistent!channel', {"type": "no-op"})
+    await layer2.send("nonexistent!channel", {"type": "no-op"})
 
-    await layer1.send(channel2,
-                      {"type": "test.message", "text": "Remote only please"})
+    await layer1.send(channel2, {"type": "test.message", "text": "Remote only please"})
     message = await layer2.receive(channel2)
     assert message["type"] == "test.message"
     assert message["text"] == "Remote only please"
@@ -220,8 +216,9 @@ async def test_groups_channel_full():
     """
     Tests that group_send ignores ChannelFull
     """
-    layer = RabbitmqChannelLayer(host=HOST, local_capacity=1,
-                                 remote_capacity=1, prefetch_count=1)
+    layer = RabbitmqChannelLayer(
+        host=HOST, local_capacity=1, remote_capacity=1, prefetch_count=1
+    )
     channel = await layer.new_channel()
     await layer.group_add("test-group", channel)
     await layer.group_send("test-group", {"type": "message.1"})  # acked

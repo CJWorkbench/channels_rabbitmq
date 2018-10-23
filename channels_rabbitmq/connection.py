@@ -1,11 +1,12 @@
 import asyncio
-from collections import defaultdict, deque
 import logging
 import time
+from collections import defaultdict, deque
 
 import aio_pika
-from channels.exceptions import ChannelFull
 import msgpack
+
+from channels.exceptions import ChannelFull
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def deserialize(message):
 
 
 def channel_to_queue_name(channel):
-    return channel[:channel.index("!")]
+    return channel[: channel.index("!")]
 
 
 def _wakeup_next(waiters):
@@ -62,6 +63,7 @@ class MultiQueue:
     we deal with the 3-4 channels on this server which are subscribed to the
     group.
     """
+
     class OutQueue:
         def __init__(self, parent):
             self.parent = parent
@@ -132,8 +134,7 @@ class MultiQueue:
             # may create self._out[channel]
             item = await self._out[channel].get()
         finally:  # Even if there's a CanceledError
-            if (not self._out[channel]._queue
-                    and not self._out[channel]._getters):
+            if not self._out[channel]._queue and not self._out[channel]._getters:
                 del self._out[channel]
         return item
 
@@ -209,9 +210,18 @@ class Connection:
     class's methods should all be called on the same event loop.
     """
 
-    def __init__(self, loop, host, queue_name, *, local_capacity=100,
-                 remote_capacity=100, prefetch_count=10, expiry=60,
-                 group_expiry=86400):
+    def __init__(
+        self,
+        loop,
+        host,
+        queue_name,
+        *,
+        local_capacity=100,
+        remote_capacity=100,
+        prefetch_count=10,
+        expiry=60,
+        group_expiry=86400
+    ):
         self.loop = loop
         self.host = host
         self.local_capacity = local_capacity
@@ -270,8 +280,7 @@ class Connection:
         # persist forever; spurious declarations do no harm.
         #
         # We'll send to the group through self._send_channel.
-        self._groups_exchange = \
-            await self._send_channel.declare_exchange("groups")
+        self._groups_exchange = await self._send_channel.declare_exchange("groups")
 
         self._send_lock.release()  # We can bind groups to the queue now
         self._groups_lock.release()  # We can bind groups to the queue now
@@ -282,6 +291,7 @@ class Connection:
         """
         Reading messages from RabbitMQ until connection close.
         """
+
         async def consume(message):
             try:
                 with message.process():  # acks when finished
@@ -308,13 +318,12 @@ class Connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=self.prefetch_count)
         arguments = {
-            'x-max-length': self.remote_capacity,
-            'x-overflow': 'reject-publish',
+            "x-max-length": self.remote_capacity,
+            "x-overflow": "reject-publish",
         }
-        self._queue = await channel.declare_queue(name=self.queue_name,
-                                                  durable=False,
-                                                  exclusive=True,
-                                                  arguments=arguments)
+        self._queue = await channel.declare_queue(
+            name=self.queue_name, durable=False, exclusive=True, arguments=arguments
+        )
 
         # We'll set no_ack=False so we get back-pressure in consume().
         await self._queue.consume(consume, no_ack=False)
@@ -337,8 +346,7 @@ class Connection:
         async with self._send_lock:
             try:
                 queued = await self._send_channel.default_exchange.publish(
-                    message,
-                    routing_key=queue_name,
+                    message, routing_key=queue_name
                 )
             except TypeError:
                 # https://github.com/mosquito/aio-pika/issues/155
@@ -366,8 +374,9 @@ class Connection:
         # duplicate bindings on the server, regardless of the sequence of
         # add+discard.
         async with self._groups_lock:
-            n_bindings = self._incoming_messages.group_add(group, channel,
-                                                           self.group_expiry)
+            n_bindings = self._incoming_messages.group_add(
+                group, channel, self.group_expiry
+            )
             if n_bindings == 1:
                 # This group is new to our connection-level queue. Make a
                 # connection-level binding.
@@ -403,8 +412,7 @@ class Connection:
                 #
                 # The Channels protocol has no way of reporting this error.
                 # Just silently delete the message.
-                log.warn("Aborting send to group %s: a queue is at capacity",
-                         group)
+                log.warn("Aborting send to group %s: a queue is at capacity", group)
                 pass
 
     async def close(self):
