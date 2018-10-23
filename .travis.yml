@@ -11,9 +11,9 @@ services:
   - rabbitmq
 
 install:
+  - pip install black pyflakes isort
   - pip install -e .[tests]
   - pip freeze
-  - pip install -U .[tests] black pyflakes isort
 
 script:
   - pyflakes .
