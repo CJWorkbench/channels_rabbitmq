@@ -3,12 +3,19 @@ sudo: false
 language: python
 
 python:
-  - "3.5"
   - "3.6"
   - "3.7"
 
 services:
-  - rabbitmq
+  - docker
+
+before_install:
+  # Use Docker rabbitmq instead of Travis'. Travis's gave us test failures
+  # with our ChannelFull features, possibly because of feature differences.
+  - docker pull rabbitmq:3.7.8-alpine
+  - docker run --rm -d -p 5672:5672 rabbitmq:3.7.8-alpine
+  # Now it'll start up while we're doing our install. There's a race, but
+  # it's extremely likely rabbitmq will be up before pytest starts.
 
 install:
   - pip install black pyflakes isort
