@@ -144,14 +144,19 @@ class MultiQueue:
         return len(channels)
 
     def group_discard(self, group, channel):
+        """
+        Remove `channel` from `group` and return the number of channels left.
+
+        Return None if the channel is not in the group.
+        """
         if group not in self.local_groups:
-            pass  # don't create set
+            return None  # don't create set
 
         channels = self.local_groups[group]
         try:
             del channels[channel]
         except KeyError:
-            pass  # it was already removed
+            return None  # it was already removed
 
         # Discard stale group memberships. These will happen if a
         # group_add() has no matching group_discard(). We only discard

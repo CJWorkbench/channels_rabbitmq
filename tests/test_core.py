@@ -187,6 +187,20 @@ async def test_groups_discard():
 
 
 @pytest.mark.asyncio
+async def test_group_discard_when_not_connected():
+    """
+    Tests basic group operation.
+    """
+    layer = RabbitmqChannelLayer(host=HOST)
+    channel1 = await layer.new_channel()
+
+    await layer.group_discard("test-group", channel1)
+    await layer.group_send("test-group", {"type": "ignored"})
+    await layer.send(channel1, {"type": "normal"})
+    assert (await layer.receive(channel1))["type"] == "normal"
+
+
+@pytest.mark.asyncio
 async def test_groups_across_layers():
     """
     Tests basic group operation.
