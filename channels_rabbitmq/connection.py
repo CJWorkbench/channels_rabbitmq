@@ -82,7 +82,10 @@ class MultiQueue:
                     await getter
                 except:
                     getter.cancel()  # Just in case getter is not done yet.
+
                     self._getters.remove(getter)
+
+                    raise
 
             item = self._queue.popleft()
             self.parent.n -= 1
