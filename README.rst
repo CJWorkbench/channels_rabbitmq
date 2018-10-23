@@ -122,19 +122,20 @@ Contributing
 To add features and fix bugs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. ``python ./setup.py pytest`` # to ensure tests pass.
-2. Write new tests in ``tests/`` and make sure they fail.
-3. Write new code in ``channels_rabbitmq/`` to make the tests pass.
-4. Submit a pull request.
+#. ``docker run --rm -it -p 5672:5672 -p 15672:15672 rabbitmq:3.7.8-management-alpine``
+#. ``python ./setup.py pytest`` # to ensure tests pass.
+#. Write new tests in ``tests/`` and make sure they fail.
+#. Write new code in ``channels_rabbitmq/`` to make the tests pass.
+#. Submit a pull request.
 
 To deploy
 ~~~~~~~~~
 
 Use `semver <https://semver.org/>`_.
 
-1. Change ``__version__`` in ``channels_rabbitmq/__init__.py``.
-2. ``git commit channels_rabbitmq/__init__.py -m 'vX.X.X'`` but don't push.
-3. ``git tag vX.X.X``
-4. ``git push --tags && git push``
+#. Change ``__version__`` in ``channels_rabbitmq/__init__.py``.
+#. ``git commit channels_rabbitmq/__init__.py -m 'vX.X.X'`` but don't push.
+#. ``git tag vX.X.X``
+#. ``git push --tags && git push``
 
 TravisCI will push to PyPi.
