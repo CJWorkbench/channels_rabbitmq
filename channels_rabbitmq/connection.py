@@ -5,8 +5,8 @@ from collections import defaultdict, deque
 
 import aio_pika
 import msgpack
+from aio_pika.exceptions import AMQPError, ChannelClosed
 
-from aio_pika.exceptions import ChannelClosed, AMQPError
 from channels.exceptions import ChannelFull
 
 log = logging.getLogger(__name__)
@@ -322,8 +322,7 @@ class Connection:
             # connection! If connect fails, aio_pika returns a stub that
             # retries in the background. We'll need to run other stuff on it
             # before returning from _connect().
-            connection = await aio_pika.connect_robust(url=self.host,
-                                                       loop=loop)
+            connection = await aio_pika.connect_robust(url=self.host, loop=loop)
 
             # Create the queue before opening send channels, so our first send
             # can only occur once the queue exists.
@@ -336,13 +335,12 @@ class Connection:
                 self._connection = connection
                 break
             except AMQPError as err:
-                log.warn('No connection to %s: %s; retrying in 1s',
-                         self.host, str(err))
+                log.warn("No connection to %s: %s; retrying in 1s", self.host, str(err))
                 await connection.close()
                 await asyncio.sleep(1)
             except RuntimeError as err:
-                if err.args == ('Connection closed',):
-                    log.warn('No connection to %s; retrying in 1s', self.host)
+                if err.args == ("Connection closed",):
+                    log.warn("No connection to %s; retrying in 1s", self.host)
                     # No need to call connection.close() -- and indeed, it
                     # seems to deadlock.
                     await asyncio.sleep(1)
@@ -363,9 +361,9 @@ class Connection:
         # persist forever; spurious declarations do no harm.
         #
         # We'll send to the group through self._send_channel.
-        self._groups_exchange = \
-                await self._send_channel.declare_exchange("groups",
-                                                          timeout=self.command_timeout)
+        self._groups_exchange = await self._send_channel.declare_exchange(
+            "groups", timeout=self.command_timeout
+        )
 
         self._send_lock.release()  # We can bind groups to the queue now
         self._groups_lock.release()  # We can bind groups to the queue now
@@ -399,20 +397,23 @@ class Connection:
                 pass
 
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=self.prefetch_count,
-                              timeout=self.command_timeout)
+        await channel.set_qos(
+            prefetch_count=self.prefetch_count, timeout=self.command_timeout
+        )
         arguments = {
             "x-max-length": self.remote_capacity,
             "x-overflow": "reject-publish",
         }
         self._queue = await channel.declare_queue(
-            name=self.queue_name, durable=False, exclusive=True,
-            arguments=arguments, timeout=self.command_timeout
+            name=self.queue_name,
+            durable=False,
+            exclusive=True,
+            arguments=arguments,
+            timeout=self.command_timeout,
         )
 
         # We'll set no_ack=False so we get back-pressure in consume().
-        await self._queue.consume(consume, no_ack=False,
-                                  timeout=self.command_timeout)
+        await self._queue.consume(consume, no_ack=False, timeout=self.command_timeout)
 
     async def send(self, channel, message):
         """

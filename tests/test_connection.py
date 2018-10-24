@@ -1,7 +1,8 @@
 import asyncio
-import pytest
 
+import pytest
 from aio_pika.exceptions import ChannelClosed
+
 from channels.exceptions import ChannelFull
 from channels_rabbitmq.connection import Connection
 
@@ -13,14 +14,11 @@ async def connect():
     connections = []
 
     def factory(queue_name, **kwargs):
-        kwargs = {
-            'host': HOST,
-            'command_timeout': 0.5,
-            **kwargs
-        }
+        kwargs = {"host": HOST, "command_timeout": 0.5, **kwargs}
 
-        connection = Connection(loop=asyncio.get_event_loop(),
-                                queue_name=queue_name, **kwargs)
+        connection = Connection(
+            loop=asyncio.get_event_loop(), queue_name=queue_name, **kwargs
+        )
         connections.append(connection)
         return connection
 
@@ -37,8 +35,7 @@ async def test_send_capacity(connect):
     Makes sure we get ChannelFull when our in-memory structure runs out of
     memory.
     """
-    connection = connect("x", remote_capacity=1, local_capacity=1,
-                         prefetch_count=1)
+    connection = connect("x", remote_capacity=1, local_capacity=1, prefetch_count=1)
     await connection.send("x!y", {"type": "test.message1"})  # one queued+acked
     await connection.send("x!y", {"type": "test.message2"})  # one unacked
     await connection.send("x!y", {"type": "test.message3"})  # one ready
@@ -197,8 +194,7 @@ async def test_groups_channel_full(connect):
     """
     Tests that group_send ignores ChannelFull
     """
-    connection = connect("x", local_capacity=1, remote_capacity=1,
-                         prefetch_count=1)
+    connection = connect("x", local_capacity=1, remote_capacity=1, prefetch_count=1)
     await connection.group_add("test-group", "x!1")
     await connection.group_send("test-group", {"type": "message.1"})  # acked
     await connection.group_send("test-group", {"type": "message.2"})  # unacked
@@ -242,10 +238,22 @@ async def test_disconnect_at_same_time_as_everything(connect):
     group_discard = connection.group_discard("g", "x!1")
     receive = connection.receive("x!1")
 
-    (close_r, send_r, group_add_r, group_send_r, group_discard_r,
-     receive_r) = await asyncio.gather(close, send, group_add, group_send,
-                                       group_discard, receive,
-                                       return_exceptions=True)
+    (
+        close_r,
+        send_r,
+        group_add_r,
+        group_send_r,
+        group_discard_r,
+        receive_r,
+    ) = await asyncio.gather(
+        close,
+        send,
+        group_add,
+        group_send,
+        group_discard,
+        receive,
+        return_exceptions=True,
+    )
 
     assert close_r is None
     assert send_r is None
@@ -266,11 +274,11 @@ async def test_log_connection_refused(connect, caplog):
     connection = connect("x", host="amqp://guest:guest@localhost:4561/")
     await asyncio.sleep(0.5)  # Enough time to try connecting once
     refused_message = (
-        'Connection refused: 500 - Connection to 127.0.0.1:4561 failed: '
-        '[Errno 111] Connection refused'
+        "Connection refused: 500 - Connection to 127.0.0.1:4561 failed: "
+        "[Errno 111] Connection refused"
     )
     retry_message = (
-        'No connection to amqp://guest:guest@localhost:4561/; retrying in 1s'
+        "No connection to amqp://guest:guest@localhost:4561/; retrying in 1s"
     )
 
     assert any(r.getMessage() == refused_message for r in caplog.records)
