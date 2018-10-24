@@ -1,7 +1,6 @@
 import pytest
 
 from asgiref.sync import async_to_sync
-from channels.exceptions import ChannelFull
 from channels_rabbitmq.core import RabbitmqChannelLayer
 
 HOST = "amqp://guest:guest@localhost/"
