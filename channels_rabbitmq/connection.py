@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 import aio_pika
 import msgpack
 
+from aio_pika.exceptions import ChannelClosed, AMQPError
 from channels.exceptions import ChannelFull
 
 log = logging.getLogger(__name__)
@@ -111,6 +112,14 @@ class MultiQueue:
             self._putters.append(putter)
             try:
                 await putter
+            except ChannelClosed:
+                # While RabbitMQ was sending us a message, we closed the
+                # connection. Since the getters would never finish, the putters
+                # would deadlock unless we sent an exception to them, too. This
+                # exception means we're closing down.
+                #
+                # Route `message` to nowhere. It _should_ be dropped.
+                return
             except:
                 putter.cancel()  # Just in case putter is not done yet
 
@@ -178,6 +187,18 @@ class MultiQueue:
 
         return ret
 
+    def cancel_all(self):
+        # Cancel all gets
+        for out_queue in self._out.values():
+            for waiter in out_queue._getters:
+                if not waiter.done():
+                    waiter.set_exception(ChannelClosed)
+
+        # Cancel all puts
+        for waiter in self._putters:
+            if not waiter.done():
+                waiter.set_exception(ChannelClosed)
+
 
 class Connection:
     """
@@ -228,7 +249,8 @@ class Connection:
         remote_capacity=100,
         prefetch_count=10,
         expiry=60,
-        group_expiry=86400
+        group_expiry=86400,
+        command_timeout=10,
     ):
         self.loop = loop
         self.host = host
@@ -238,13 +260,15 @@ class Connection:
         self.expiry = expiry
         self.group_expiry = group_expiry
         self.queue_name = queue_name
+        self.command_timeout = command_timeout
 
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
         # the caller is going away: we'll delete the queue in that case.
         self._incoming_messages = MultiQueue(loop, local_capacity)
 
-        self._connection = self.loop.create_future()
+        self._connection = None
+        self._is_closed = False
 
         # self._send_lock is released when we're allowed to send commands to
         # RabbitMQ with self._send_channel.
@@ -273,27 +297,58 @@ class Connection:
         """
         Connect to RabbitMQ and schedule disconnect on event-loop close.
         """
-        connection = await aio_pika.connect_robust(url=self.host, loop=loop)
+        while not self._is_closed:
+            # Build connection. This does not mean there's an actual TCP
+            # connection! If connect fails, aio_pika returns a stub that
+            # retries in the background. We'll need to run other stuff on it
+            # before returning from _connect().
+            connection = await aio_pika.connect_robust(url=self.host,
+                                                       loop=loop)
 
-        self._connection.set_result(connection)
+            # Create the queue before opening send channels, so our first send
+            # can only occur once the queue exists.
+            #
+            # Unlike connect_robust(), _begin_consuming() won't return on
+            # failure.
+            try:
+                await self._begin_consuming(connection)
+                # Now set self._connection: we can close now.
+                self._connection = connection
+                break
+            except AMQPError as err:
+                log.warn('No connection to %s: %s; retrying in 1s',
+                         self.host, str(err))
+                await connection.close()
+                await asyncio.sleep(1)
+            except RuntimeError as err:
+                if err.args == ('Connection closed',):
+                    log.warn('No connection to %s; retrying in 1s', self.host)
+                    # No need to call connection.close() -- and indeed, it
+                    # seems to deadlock.
+                    await asyncio.sleep(1)
+                else:
+                    raise
 
-        # Create the queue before opening send channels, so our first send can
-        # only occur once the queue exists.
-        await self._begin_consuming(connection)
+        if self._is_closed:
+            # Everybody who requests these locks will check this._is_closed
+            # after.
+            self._send_lock.release()
+            self._groups_lock.release()
+            return
 
-        send_channel = await connection.channel(publisher_confirms=True)
+        send_channel = await self._connection.channel(publisher_confirms=True)
         self._send_channel = send_channel
 
         # Declare "groups" exchange once per time we connect. It will
         # persist forever; spurious declarations do no harm.
         #
         # We'll send to the group through self._send_channel.
-        self._groups_exchange = await self._send_channel.declare_exchange("groups")
+        self._groups_exchange = \
+                await self._send_channel.declare_exchange("groups",
+                                                          timeout=self.command_timeout)
 
         self._send_lock.release()  # We can bind groups to the queue now
         self._groups_lock.release()  # We can bind groups to the queue now
-
-        return connection
 
     async def _begin_consuming(self, connection):
         """
@@ -324,17 +379,20 @@ class Connection:
                 pass
 
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=self.prefetch_count)
+        await channel.set_qos(prefetch_count=self.prefetch_count,
+                              timeout=self.command_timeout)
         arguments = {
             "x-max-length": self.remote_capacity,
             "x-overflow": "reject-publish",
         }
         self._queue = await channel.declare_queue(
-            name=self.queue_name, durable=False, exclusive=True, arguments=arguments
+            name=self.queue_name, durable=False, exclusive=True,
+            arguments=arguments, timeout=self.command_timeout
         )
 
         # We'll set no_ack=False so we get back-pressure in consume().
-        await self._queue.consume(consume, no_ack=False)
+        await self._queue.consume(consume, no_ack=False,
+                                  timeout=self.command_timeout)
 
     async def send(self, channel, message):
         """
@@ -352,6 +410,9 @@ class Connection:
         # with `overflow: reject-publish`, so we get a basic.nack if the queue
         # length is exceeded.
         async with self._send_lock:
+            if self._is_closed:
+                return
+
             try:
                 queued = await self._send_channel.default_exchange.publish(
                     message, routing_key=queue_name
@@ -382,6 +443,9 @@ class Connection:
         # duplicate bindings on the server, regardless of the sequence of
         # add+discard.
         async with self._groups_lock:
+            if self._is_closed:
+                return
+
             n_bindings = self._incoming_messages.group_add(
                 group, channel, self.group_expiry
             )
@@ -400,6 +464,9 @@ class Connection:
         # duplicate bindings on the server, regardless of the sequence of
         # add+discard.
         async with self._groups_lock:
+            if self._is_closed:
+                return
+
             n_bindings = self._incoming_messages.group_discard(group, channel)
             if n_bindings == 0:
                 # On this connection-level queue, we no longer have any
@@ -413,6 +480,9 @@ class Connection:
         message = serialize(message, expiration=int(self.expiry * 1000))
 
         async with self._send_lock:
+            if self._is_closed:
+                return
+
             try:
                 await self._groups_exchange.publish(message, routing_key=group)
             except TypeError:
@@ -424,5 +494,18 @@ class Connection:
                 pass
 
     async def close(self):
-        connection = await self._connection
-        await connection.close()
+        if self._is_closed:
+            return
+
+        self._is_closed = True
+        async with self._send_lock:
+            try:
+                if self._connection:
+                    await self._connection.close()
+            except AMQPError as err:
+                # Don't raise. Assume failed disconnect leaves us in the state
+                # we want.
+                log.warn("AMQPError while closing connection: %s", str(err))
+                raise
+            finally:
+                self._incoming_messages.cancel_all()
