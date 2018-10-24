@@ -216,7 +216,15 @@ async def test_groups_channel_full(connect):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_before_anything(connect):
+async def test_receive_after_disconnect(connect):
+    connection = connect("x")
+    await connection.close()
+    with pytest.raises(ChannelClosed):
+        await connection.receive("x!1")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_at_same_time_as_everything(connect):
     """
     If we disconnect before the connection is established, don't deadlock.
     """

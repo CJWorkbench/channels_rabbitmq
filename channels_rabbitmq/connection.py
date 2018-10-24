@@ -102,11 +102,15 @@ class MultiQueue:
         self.local_groups = defaultdict(dict)  # group => {channel => expiry}
         self._out = defaultdict(lambda: MultiQueue.OutQueue(self))
         self._putters = deque()
+        self._is_closed = False
 
     def full(self):
         return self.n >= self.capacity
 
     async def put_channel(self, channel, message):
+        if self._is_closed:
+            return
+
         while self.full():
             putter = self.loop.create_future()
             self._putters.append(putter)
@@ -133,6 +137,9 @@ class MultiQueue:
         _wakeup_next(self._out[channel]._getters)
 
     async def put_group(self, group, message):
+        if self._is_closed:
+            return
+
         if group not in self.local_groups:
             return  # don't create group
 
@@ -142,6 +149,9 @@ class MultiQueue:
             await self.put_channel(channel, message)
 
     async def get(self, channel):
+        if self._is_closed:
+            raise ChannelClosed
+
         try:
             # may create self._out[channel]
             item = await self._out[channel].get()
@@ -151,6 +161,9 @@ class MultiQueue:
         return item
 
     def group_add(self, group, channel, group_expiry=86400):
+        if self._is_closed:
+            return None
+
         channels = self.local_groups[group]  # may create set
         channels[channel] = time.time() + group_expiry
         return len(channels)
@@ -161,6 +174,9 @@ class MultiQueue:
 
         Return None if the channel is not in the group.
         """
+        if self._is_closed:
+            return None
+
         if group not in self.local_groups:
             return None  # don't create set
 
@@ -187,17 +203,21 @@ class MultiQueue:
 
         return ret
 
-    def cancel_all(self):
+    def close(self):
+        self._is_closed = True
+
         # Cancel all gets
         for out_queue in self._out.values():
             for waiter in out_queue._getters:
                 if not waiter.done():
                     waiter.set_exception(ChannelClosed)
+        self._out.clear()
 
         # Cancel all puts
         for waiter in self._putters:
             if not waiter.done():
                 waiter.set_exception(ChannelClosed)
+        self._putters.clear()
 
 
 class Connection:
@@ -508,4 +528,4 @@ class Connection:
                 log.warn("AMQPError while closing connection: %s", str(err))
                 raise
             finally:
-                self._incoming_messages.cancel_all()
+                self._incoming_messages.close()
