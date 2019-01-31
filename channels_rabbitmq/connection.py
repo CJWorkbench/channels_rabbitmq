@@ -5,8 +5,8 @@ from collections import defaultdict, deque
 
 import aio_pika
 import msgpack
-from aio_pika.robust_connection import RobustConnection
 from aio_pika.exceptions import AMQPError, ChannelClosed, DeliveryError
+from aio_pika.robust_connection import RobustConnection
 
 from channels.exceptions import ChannelFull
 
@@ -228,6 +228,7 @@ class SaneRobustConnection(RobustConnection):
     Changes from RobustConnection:
         * if connection fails because of CancelledError, don't retry.
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -242,11 +243,10 @@ class SaneRobustConnection(RobustConnection):
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            log.info('Ignoring exception %r' % err)
+            log.info("Ignoring exception %r" % err)
 
     # override
-    def _on_connection_lost(self, future: asyncio.Future, connection,
-                            code, reason):
+    def _on_connection_lost(self, future: asyncio.Future, connection, code, reason):
         if isinstance(reason, asyncio.CancelledError):
             return  # we raised it elsewhere
 
@@ -346,8 +346,9 @@ class Connection:
         # Build connection. This will stall forever, until the connection
         # succeeds. It will log in the meantime.
         self._connect_task = loop.create_task(
-            aio_pika.connect_robust(url=self.host, loop=loop,
-                                    connection_class=SaneRobustConnection)
+            aio_pika.connect_robust(
+                url=self.host, loop=loop, connection_class=SaneRobustConnection
+            )
         )
 
         loop.create_task(self._connect(self._connect_task))
