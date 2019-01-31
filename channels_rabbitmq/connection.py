@@ -5,7 +5,8 @@ from collections import defaultdict, deque
 
 import aio_pika
 import msgpack
-from aio_pika.exceptions import AMQPError, ChannelClosed
+from aio_pika.robust_connection import RobustConnection
+from aio_pika.exceptions import AMQPError, ChannelClosed, DeliveryError
 
 from channels.exceptions import ChannelFull
 
@@ -81,7 +82,7 @@ class MultiQueue:
 
                 try:
                     await getter
-                except:
+                except Exception:
                     getter.cancel()  # Just in case getter is not done yet.
 
                     self._getters.remove(getter)
@@ -124,7 +125,7 @@ class MultiQueue:
                 #
                 # Route `message` to nowhere. It _should_ be dropped.
                 return
-            except:
+            except Exception:
                 putter.cancel()  # Just in case putter is not done yet
 
                 # Clean self._putters from canceled putters
@@ -220,6 +221,38 @@ class MultiQueue:
         self._putters.clear()
 
 
+class SaneRobustConnection(RobustConnection):
+    """
+    A RobustConnection that doesn't do stupid things.
+
+    Changes from RobustConnection:
+        * if connection fails because of CancelledError, don't retry.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    # override
+    async def reconnect(self):
+        # The parent uses `suppress(Exception)`, which is evil.
+        try:
+            # Calls `_on_connection_lost` in case of errors
+            # super(RobustConnection, ...) gives grandparent connect()
+            if await super(RobustConnection, self).connect():
+                await self.on_reconnect()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            log.info('Ignoring exception %r' % err)
+
+    # override
+    def _on_connection_lost(self, future: asyncio.Future, connection,
+                            code, reason):
+        if isinstance(reason, asyncio.CancelledError):
+            return  # we raised it elsewhere
+
+        super()._on_connection_lost(future, connection, code, reason)
+
+
 class Connection:
     """
     A single event loop's connection to RabbitMQ.
@@ -296,7 +329,6 @@ class Connection:
         # TODO optimize by building a pool of send channels. Each send waits
         # for an ack, so we could benefit from parallel sends.
         self._send_lock = asyncio.Semaphore(value=0, loop=loop)
-        self._send_lock.acquire()  # released when _send_channel is not None
         self._send_channel = None
 
         # _groups_lock is released when _queue is set: that's when we're ready
@@ -311,48 +343,41 @@ class Connection:
         self._groups_exchange = None
         self._queue = None
 
-        loop.create_task(self._connect(loop))
+        # Build connection. This will stall forever, until the connection
+        # succeeds. It will log in the meantime.
+        self._connect_task = loop.create_task(
+            aio_pika.connect_robust(url=self.host, loop=loop,
+                                    connection_class=SaneRobustConnection)
+        )
 
-    async def _connect(self, loop):
+        loop.create_task(self._connect(self._connect_task))
+
+    async def _connect(self, connect_task):
         """
         Connect to RabbitMQ and schedule disconnect on event-loop close.
+
+        (Passing `self._connect_task` as an argument is a bit of a hack. It
+        ensures we call _connect() only _after_ we start self._connect_task.
+        Otherwise, we may not be able to await it.)
         """
-        while not self._is_closed:
-            # Build connection. This does not mean there's an actual TCP
-            # connection! If connect fails, aio_pika returns a stub that
-            # retries in the background. We'll need to run other stuff on it
-            # before returning from _connect().
-            connection = await aio_pika.connect_robust(url=self.host, loop=loop)
-
-            # Create the queue before opening send channels, so our first send
-            # can only occur once the queue exists.
-            #
-            # Unlike connect_robust(), _begin_consuming() won't return on
-            # failure.
-            try:
-                await self._begin_consuming(connection)
-                # Now set self._connection: we can close now.
-                self._connection = connection
-                break
-            except AMQPError as err:
-                log.warn("No connection to %s: %s; retrying in 1s", self.host, str(err))
-                await connection.close()
-                await asyncio.sleep(1)
-            except RuntimeError as err:
-                if err.args == ("Connection closed",):
-                    log.warn("No connection to %s; retrying in 1s", self.host)
-                    # No need to call connection.close() -- and indeed, it
-                    # seems to deadlock.
-                    await asyncio.sleep(1)
-                else:
-                    raise
-
-        if self._is_closed:
-            # Everybody who requests these locks will check this._is_closed
-            # after.
+        try:
+            self._connection = await connect_task
+        except asyncio.CancelledError:
+            # This means `self.close()` was called. Release our locks, so all
+            # the user's next calls can execute.
+            assert self._is_closed
             self._send_lock.release()
             self._groups_lock.release()
-            return
+            self._incoming_messages.close()
+            raise  # asyncio asks us to re-raise. We're done here anyway.
+        finally:
+            self._connect_task = None
+
+        # Create the queue before opening send channels, so our first send
+        # can only occur once the queue exists.
+        #
+        # Returns once we have _begun_ consuming.
+        await self._begin_consuming(self._connection)
 
         send_channel = await self._connection.channel(publisher_confirms=True)
         self._send_channel = send_channel
@@ -370,7 +395,10 @@ class Connection:
 
     async def _begin_consuming(self, connection):
         """
-        Reading messages from RabbitMQ until connection close.
+        Start reading messages from RabbitMQ until connection close.
+
+        Returns once we have subscribed to the queue (and before processing any
+        messages).
         """
 
         async def consume(message):
@@ -438,8 +466,7 @@ class Connection:
                 queued = await self._send_channel.default_exchange.publish(
                     message, routing_key=queue_name
                 )
-            except TypeError:
-                # https://github.com/mosquito/aio-pika/issues/155
+            except DeliveryError:
                 queued = False
 
             if not queued:
@@ -506,12 +533,8 @@ class Connection:
 
             try:
                 await self._groups_exchange.publish(message, routing_key=group)
-            except TypeError:
-                # https://github.com/mosquito/aio-pika/issues/155
-                #
-                # The Channels protocol has no way of reporting this error.
-                # Just silently delete the message.
-                log.warn("Aborting send to group %s: a queue is at capacity", group)
+            except DeliveryError:
+                log.warning("Aborting send to group %s: a queue is at capacity", group)
                 pass
 
     async def close(self):
@@ -519,14 +542,31 @@ class Connection:
             return
 
         self._is_closed = True
-        async with self._send_lock:
-            try:
-                if self._connection:
-                    await self._connection.close()
-            except AMQPError as err:
-                # Don't raise. Assume failed disconnect leaves us in the state
-                # we want.
-                log.warn("AMQPError while closing connection: %s", str(err))
-                raise
-            finally:
-                self._incoming_messages.close()
+
+        if self._connect_task:
+            # _connect()'s robust_connect() call has not returned yet. Cancel,
+            # causing asyncio.CancelledError there.
+            self._connect_task.cancel()
+            self._connect_task = None
+
+            # Wait for _connect() to complete
+            async with self._send_lock:
+                pass
+        else:
+            # If self._connect_task is None, that means we _have_ connected at
+            # least once, so self._connection _has_ been set at least once, and
+            # self._send_lock has been released by self._connect().
+            async with self._send_lock:
+                if self._connection:  # the connection was established
+                    await self._do_close(self._connection)
+
+    async def _do_close(self, connection):
+        try:
+            await connection.close()
+        except AMQPError as err:
+            # Don't raise. Assume failed disconnect leaves us in the state
+            # we want.
+            log.warning("AMQPError while closing connection: %s", str(err))
+            raise
+        finally:
+            self._incoming_messages.close()

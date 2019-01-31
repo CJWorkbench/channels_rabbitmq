@@ -277,10 +277,6 @@ async def test_log_connection_refused(connect, caplog):
         "Connection refused: 500 - Connection to 127.0.0.1:4561 failed: "
         "[Errno 111] Connection refused"
     )
-    retry_message = (
-        "No connection to amqp://guest:guest@localhost:4561/; retrying in 1s"
-    )
 
-    assert any(r.getMessage() == refused_message for r in caplog.records)
-    assert any(r.getMessage() == retry_message for r in caplog.records)
     await connection.close()
+    assert any(r.getMessage() == refused_message for r in caplog.records)
