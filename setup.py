@@ -23,7 +23,7 @@ setup(
     packages=find_packages(exclude=["tests"]),
     include_package_data=True,
     install_requires=[
-        "aio-pika~=4.9.3",
+        "aio-pika==4.9.1",
         "asgiref~=2.1",
         "msgpack~=0.5.2",
         "channels~=2.0",
