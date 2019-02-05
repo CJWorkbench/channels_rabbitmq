@@ -286,7 +286,7 @@ async def test_log_connection_refused(connect, caplog):
     connection = connect("x", host="amqp://guest:guest@localhost:4561/")
     await asyncio.sleep(0.5)  # Enough time to try connecting once
 
-    assert "[Errno 111] Connect call failed" in caplog.text
+    assert "Connect call failed" in caplog.text
     assert "will retry" in caplog.text
 
     await connection.close()
