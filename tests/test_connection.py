@@ -265,7 +265,7 @@ async def test_disconnect_at_same_time_as_everything(connect):
 
     assert close_r is None
     assert isinstance(send_r, ChannelClosed)
-    assert group_add_r is None
+    assert isinstance(group_add_r, ChannelClosed)
     assert isinstance(group_send_r, ChannelClosed)
     assert group_discard_r is None
     assert isinstance(receive_r, ChannelClosed)

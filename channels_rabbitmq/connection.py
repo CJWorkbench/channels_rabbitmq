@@ -6,8 +6,7 @@ from collections import defaultdict, deque
 
 import aioamqp
 import msgpack
-from aioamqp.exceptions import (AmqpClosedConnection, ChannelClosed,
-                                PublishFailed)
+from aioamqp.exceptions import AmqpClosedConnection, ChannelClosed, PublishFailed
 
 from channels.exceptions import ChannelFull
 
@@ -370,6 +369,9 @@ class Connection:
         # finishes by acking its message and deleting itself from this list.
         self._pending_puts = set()
 
+        # Lock used to add/remove from groups atomically
+        self._groups_lock = asyncio.Lock()
+
         self._is_closed = False
 
         # self._is_connected: means self._protocol and self._channel are
@@ -474,22 +476,17 @@ class Connection:
         self._channel = channel
 
         # Re-bind groups (after reconnect)
-        #
-        # We can guarantee that pending instances of `group_add()` and
-        # `group_remove()` won't run concurrently to us: if they started before
-        # we set self._channel (just now), they won't actually affect our queue
-        # (since it's exclusive=True).
-        groups = list(self._incoming_messages.local_groups.keys())
-        logger.debug("Rebinding groups to queue %s: %r", self.queue_name, groups)
-        # Schedule _all_ the binds. This guarantees they come before
-        # self.group_add() and self.group_discard() binds are called. So if
-        # we discard an already-added group, we'll be fine.
-        await gather_without_leaking(
-            [
-                channel.queue_bind(self.queue_name, GroupsExchange, routing_key=group)
-                for group in groups
-            ]
-        )
+        async with self._groups_lock:
+            groups = list(self._incoming_messages.local_groups.keys())
+            logger.debug("Rebinding groups to queue %s: %r", self.queue_name, groups)
+            await gather_without_leaking(
+                [
+                    channel.queue_bind(
+                        self.queue_name, GroupsExchange, routing_key=group
+                    )
+                    for group in groups
+                ]
+            )
 
         self._notify_connect_event()  # anyone waiting for us?
 
@@ -609,41 +606,51 @@ class Connection:
         assert channel_to_queue_name(asgi_channel) == self.queue_name
         return await self._incoming_messages.get(asgi_channel)
 
-    async def group_add(self, group, asgi_channel):
+    @stall_until_connected_or_closed
+    async def group_add(self, channel, group, asgi_channel):
+        """
+        Register to receive messages for ``group`` on RabbitMQ.
+
+        Upon reconnect, this Connection will re-register every group ... but
+        any messages sent while disconnected won't reach it.
+        """
         assert (
             channel_to_queue_name(asgi_channel) == self.queue_name
         ), "This layer won't let you add a channel from another connection"
 
-        n_bindings = self._incoming_messages.group_add(
-            group, asgi_channel, self.group_expiry
-        )
-        if n_bindings == 1 and self._is_connected and not self._is_closed:
-            logger.debug("Binding queue %s to group %s", self.queue_name, group)
-            # This group is new to our connection-level queue. Make a
-            # connection-level binding.
-            #
-            # Don't worry about races: if we disconnect somewhere around here,
-            # we'll re-bind during reconnect.
-            await self._channel.queue_bind(
-                self.queue_name, GroupsExchange, routing_key=group
+        async with self._groups_lock:
+            n_bindings = self._incoming_messages.group_add(
+                group, asgi_channel, self.group_expiry
             )
+            if n_bindings == 1:
+                logger.debug("Binding queue %s to group %s", self.queue_name, group)
+                # This group is new to our connection-level queue. Make a
+                # connection-level binding.
+                await channel.queue_bind(
+                    self.queue_name, GroupsExchange, routing_key=group
+                )
 
     async def group_discard(self, group, asgi_channel):
+        """
+        No longer receive messages for ``group`` on RabbitMQ.
+
+        If we're connected to RabbitMQ when calling this, it will return once
+        disconnected. If we happen to be between reconnects, it will return
+        immediately -- and when we finally reconnect, ``group`` will be
+        unregistered.
+        """
         assert (
             channel_to_queue_name(asgi_channel) == self.queue_name
         ), "This layer won't let you remove a channel from another connection"
 
-        n_bindings = self._incoming_messages.group_discard(group, asgi_channel)
-        if n_bindings == 0 and self._is_connected and not self._is_closed:
-            logger.debug("Unbinding queue %s from group %s", self.queue_name, group)
-            # This group is new to our connection-level queue. Make a
-            # connection-level binding.
-            #
-            # Don't worry about races: if we disconnect somewhere around here,
-            # we won't re-bind during reconnect.
-            await self._channel.queue_unbind(
-                self.queue_name, GroupsExchange, routing_key=group
-            )
+        async with self._groups_lock:
+            n_bindings = self._incoming_messages.group_discard(group, asgi_channel)
+            if n_bindings == 0 and self._is_connected and not self._is_closed:
+                logger.debug("Unbinding queue %s from group %s", self.queue_name, group)
+                # Disconnect, if we're connected.
+                await self._channel.queue_unbind(
+                    self.queue_name, GroupsExchange, routing_key=group
+                )
 
     @stall_until_connected_or_closed
     async def group_send(self, channel, group, message):
