@@ -14,11 +14,7 @@ async def connect():
     connections = []
 
     def factory(queue_name, **kwargs):
-        kwargs = {
-            'host': HOST,
-            'queue_name': queue_name,
-            **kwargs
-        }
+        kwargs = {"host": HOST, "queue_name": queue_name, **kwargs}
 
         connection = Connection(loop=asyncio.get_event_loop(), **kwargs)
         connections.append(connection)

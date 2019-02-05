@@ -7,14 +7,13 @@ from collections import defaultdict, deque
 import aioamqp
 import msgpack
 
-from aioamqp.exceptions import ChannelClosed, PublishFailed, \
-        AmqpClosedConnection
+from aioamqp.exceptions import ChannelClosed, PublishFailed, AmqpClosedConnection
 from channels.exceptions import ChannelFull
 
 logger = logging.getLogger(__name__)
 
 
-GroupsExchange = 'groups'
+GroupsExchange = "groups"
 ReconnectDelay = 1.0  # seconds
 
 
@@ -153,8 +152,10 @@ class MultiQueue:
             return  # don't create group
 
         await gather_without_leaking(
-            [self.put_channel(asgi_channel, message)
-             for asgi_channel in self.local_groups[group]]
+            [
+                self.put_channel(asgi_channel, message)
+                for asgi_channel in self.local_groups[group]
+            ]
         )
 
     async def get(self, asgi_channel):
@@ -255,6 +256,7 @@ def stall_until_connected_or_closed(fn):
     * During startup, before connection, queue messages instead of sending.
     * Handle shutdown, even during startup. (We'll connect then disconnect.)
     """
+
     @functools.wraps(fn)
     async def inner(self, *args, **kwargs):
         while not self._is_connected and not self._is_closed:
@@ -271,7 +273,7 @@ def stall_until_connected_or_closed(fn):
 async def ack_message_if_we_can(channel, delivery_tag):
     try:
         await channel.basic_client_ack(delivery_tag)
-        logger.debug('Acked delivery %s', delivery_tag)
+        logger.debug("Acked delivery %s", delivery_tag)
     except ChannelClosed:
         # we tried to ack/nack and failed because we're closed. Assume
         # that's what the user wanted. It's not like we can acknowledge
@@ -279,7 +281,7 @@ async def ack_message_if_we_can(channel, delivery_tag):
         #
         # Worst-case, we reconnect and receive the message again:
         # At-least-once delivery.
-        logger.debug('ConnectionClosed acking delivery %s', delivery_tag)
+        logger.debug("ConnectionClosed acking delivery %s", delivery_tag)
         pass
 
 
@@ -399,11 +401,7 @@ class Connection:
         while not self._is_closed:
             try:
                 await self._connect_and_run()
-            except (
-                AmqpClosedConnection,
-                ConnectionError,
-                OSError,
-            ) as err:
+            except (AmqpClosedConnection, ConnectionError, OSError) as err:
                 if self._is_closed:
                     logger.debug("Connect/run on RabbitMQ failed: %r", err)
                     # these aren't errors when the caller said close(). Not
@@ -412,11 +410,12 @@ class Connection:
 
                 logger.info(
                     "Connection/run on RabbitMQ failed: %s; will retry in %fs",
-                    str(err), ReconnectDelay
+                    str(err),
+                    ReconnectDelay,
                 )
                 await asyncio.sleep(ReconnectDelay)
             except Exception:
-                logger.exception('Unhandled exception from aioamqp')
+                logger.exception("Unhandled exception from aioamqp")
                 raise  # and crash
 
     def _notify_connect_event(self):
@@ -432,7 +431,7 @@ class Connection:
     async def _connect_and_run(self):
         self._is_connected = False
 
-        logger.info('Channels connecting to RabbitMQ at %s', self.host)
+        logger.info("Channels connecting to RabbitMQ at %s", self.host)
         transport, protocol = await aioamqp.from_url(self.host)
         channel = await protocol.channel()
 
@@ -452,12 +451,13 @@ class Connection:
         # to preserve every message across connects. That's okay -- disconnect
         # means one or two lost messages and nothing more.
         await channel.queue_declare(
-            self.queue_name, exclusive=True,
+            self.queue_name,
+            exclusive=True,
             arguments={
                 "x-max-length": self.remote_capacity,
                 "x-overflow": "reject-publish",
                 "x-message-ttl": int(self.expiry * 1000),
-            }
+            },
         )
         await channel.basic_qos(prefetch_count=self.prefetch_count)
         # It's tempting to set no_ack=True, since this is an exclusive queue.
@@ -479,15 +479,15 @@ class Connection:
         # we set self._channel (just now), they won't actually affect our queue
         # (since it's exclusive=True).
         groups = list(self._incoming_messages.local_groups.keys())
-        logger.debug("Rebinding groups to queue %s: %r",
-                     self.queue_name, groups)
+        logger.debug("Rebinding groups to queue %s: %r", self.queue_name, groups)
         # Schedule _all_ the binds. This guarantees they come before
         # self.group_add() and self.group_discard() binds are called. So if
         # we discard an already-added group, we'll be fine.
         await gather_without_leaking(
-            [channel.queue_bind(self.queue_name, GroupsExchange,
-                                routing_key=group)
-             for group in groups]
+            [
+                channel.queue_bind(self.queue_name, GroupsExchange, routing_key=group)
+                for group in groups
+            ]
         )
 
         self._notify_connect_event()  # anyone waiting for us?
@@ -522,8 +522,11 @@ class Connection:
             asgi_channel = d.get("__asgi_channel__")
             group = d.get("__asgi_group__")
 
-            logger.debug("Received message %s on ASGI channel/group %s",
-                         envelope.delivery_tag, asgi_channel or group)
+            logger.debug(
+                "Received message %s on ASGI channel/group %s",
+                envelope.delivery_tag,
+                asgi_channel or group,
+            )
 
             if asgi_channel and group:
                 raise RuntimeError("Message has both channel and group")
@@ -537,19 +540,18 @@ class Connection:
         # _return_ immediately.
         #
         # This works around https://github.com/Polyconseil/aioamqp/issues/149
-        task = asyncio.create_task(self._handle_message_background(
-            channel,
-            asgi_channel,
-            group,
-            d,
-            envelope.delivery_tag
-        ))
+        task = asyncio.create_task(
+            self._handle_message_background(
+                channel, asgi_channel, group, d, envelope.delivery_tag
+            )
+        )
         self._pending_puts.add(task)
         # Cleanup: remove from _pending_puts when done.
         task.add_done_callback(self._pending_puts.remove)
 
-    async def _handle_message_background(self, channel, asgi_channel, group,
-                                         data, delivery_tag):
+    async def _handle_message_background(
+        self, channel, asgi_channel, group, data, delivery_tag
+    ):
         """
         Deliver `data` to `asgi_channel` or `group`, then ack.
 
@@ -590,11 +592,11 @@ class Connection:
         # with `overflow: reject-publish`, so we get a basic.nack if the queue
         # length is exceeded.
         try:
-            logger.debug('publish %r on %s', message, queue_name)
-            await channel.publish(message, '', queue_name)
+            logger.debug("publish %r on %s", message, queue_name)
+            await channel.publish(message, "", queue_name)
         except PublishFailed:
             raise ChannelFull()
-        logger.debug('ok')
+        logger.debug("ok")
 
     async def receive(self, asgi_channel):
         """
@@ -615,17 +617,14 @@ class Connection:
             group, asgi_channel, self.group_expiry
         )
         if n_bindings == 1 and self._is_connected and not self._is_closed:
-            logger.debug("Binding queue %s to group %s", self.queue_name,
-                         group)
+            logger.debug("Binding queue %s to group %s", self.queue_name, group)
             # This group is new to our connection-level queue. Make a
             # connection-level binding.
             #
             # Don't worry about races: if we disconnect somewhere around here,
             # we'll re-bind during reconnect.
             await self._channel.queue_bind(
-                self.queue_name,
-                GroupsExchange,
-                routing_key=group
+                self.queue_name, GroupsExchange, routing_key=group
             )
 
     async def group_discard(self, group, asgi_channel):
@@ -635,17 +634,14 @@ class Connection:
 
         n_bindings = self._incoming_messages.group_discard(group, asgi_channel)
         if n_bindings == 0 and self._is_connected and not self._is_closed:
-            logger.debug("Unbinding queue %s from group %s", self.queue_name,
-                         group)
+            logger.debug("Unbinding queue %s from group %s", self.queue_name, group)
             # This group is new to our connection-level queue. Make a
             # connection-level binding.
             #
             # Don't worry about races: if we disconnect somewhere around here,
             # we won't re-bind during reconnect.
             await self._channel.queue_unbind(
-                self.queue_name,
-                GroupsExchange,
-                routing_key=group
+                self.queue_name, GroupsExchange, routing_key=group
             )
 
     @stall_until_connected_or_closed
@@ -660,8 +656,7 @@ class Connection:
         except PublishFailed:
             # The Channels protocol has no way of reporting this error.
             # Just silently delete the message.
-            logger.warning("Aborting send to group %s: a queue is at capacity",
-                           group)
+            logger.warning("Aborting send to group %s: a queue is at capacity", group)
             pass
 
     async def close(self):
