@@ -411,9 +411,9 @@ class Connection:
                     # really. AmqpClosedConnection is _expected_ even.
                     return
 
-                logger.info(
-                    "Connection/run on RabbitMQ failed: %s; will retry in %fs",
-                    str(err),
+                logger.warning(
+                    "Connect/run on RabbitMQ failed: %r; will retry in %fs",
+                    err,
                     ReconnectDelay,
                 )
                 await asyncio.sleep(ReconnectDelay)
@@ -509,6 +509,7 @@ class Connection:
         # case 1 only: if the channel was closed and the connection wasn't,
         # wipe out the connection. (Otherwise, this is a no-op.)
         await protocol.close()
+        transport.close()  # probably spurious
 
         # await protocol.worker so that every Future that's been
         # created gets awaited.
