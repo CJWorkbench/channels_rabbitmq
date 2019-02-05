@@ -6,8 +6,9 @@ from collections import defaultdict, deque
 
 import aioamqp
 import msgpack
+from aioamqp.exceptions import (AmqpClosedConnection, ChannelClosed,
+                                PublishFailed)
 
-from aioamqp.exceptions import ChannelClosed, PublishFailed, AmqpClosedConnection
 from channels.exceptions import ChannelFull
 
 logger = logging.getLogger(__name__)
