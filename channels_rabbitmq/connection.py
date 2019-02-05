@@ -539,7 +539,8 @@ class Connection:
         # _return_ immediately.
         #
         # This works around https://github.com/Polyconseil/aioamqp/issues/149
-        task = asyncio.create_task(
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(
             self._handle_message_background(
                 channel, asgi_channel, group, d, envelope.delivery_tag
             )
