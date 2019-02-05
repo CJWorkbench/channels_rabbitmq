@@ -9,6 +9,10 @@ from channels_rabbitmq.connection import Connection
 HOST = "amqp://guest:guest@localhost/"
 
 
+def ASYNC_TEST(fn):
+    return pytest.mark.timeout(8)(pytest.mark.asyncio(fn))
+
+
 @pytest.fixture
 async def connect():
     connections = []
@@ -27,7 +31,7 @@ async def connect():
     connections = []
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_send_capacity(connect):
     """
     Makes sure we get ChannelFull when our in-memory structure runs out of
@@ -59,7 +63,7 @@ async def test_send_capacity(connect):
     assert (await connection.receive("x!y"))["type"] == "test.message5"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_process_local_send_receive(connect):
     """
     Makes sure we can send a message to a process-local channel then receive it.
@@ -70,7 +74,7 @@ async def test_process_local_send_receive(connect):
     assert message["type"] == "test.message"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_process_remote_send_receive(connect):
     """
     Makes sure we can send a message to a process-local channel then receive it.
@@ -89,7 +93,7 @@ async def test_process_remote_send_receive(connect):
     assert (await connection1.receive("x!y"))["type"] == "local"  # no remote
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_multi_send_receive(connect):
     """
     Tests overlapping sends and receives, and ordering.
@@ -103,7 +107,7 @@ async def test_multi_send_receive(connect):
     assert (await connection.receive("x!y"))["type"] == "message.3"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_reject_bad_channel(connect):
     """
     Makes sure sending/receiving on an invalid channel name fails.
@@ -113,7 +117,7 @@ async def test_reject_bad_channel(connect):
         await connection.receive("y!y")
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_local(connect):
     """
     Tests basic group operation.
@@ -134,7 +138,7 @@ async def test_groups_local(connect):
     assert (await connection.receive("x!2"))["type"] == "message.2"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_discard(connect):
     """
     Tests basic group operation.
@@ -151,7 +155,7 @@ async def test_groups_discard(connect):
     assert (await connection.receive("x!1"))["type"] == "normal"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_group_discard_when_not_connected(connect):
     """
     Tests basic group operation.
@@ -164,7 +168,7 @@ async def test_group_discard_when_not_connected(connect):
     assert (await connection.receive("x!1"))["type"] == "normal"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_remote(connect):
     """
     Tests basic group operation.
@@ -187,7 +191,7 @@ async def test_groups_remote(connect):
     assert (await connection1.receive("x!2"))["type"] == "message.2"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_channel_full(connect):
     """
     Tests that group_send ignores ChannelFull
@@ -209,7 +213,7 @@ async def test_groups_channel_full(connect):
     assert (await connection.receive("x!1"))["type"] == "message.6"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_receive_after_disconnect(connect):
     connection = connect("x")
     await asyncio.sleep(0)  # start connecting (it happens in the background)
@@ -218,7 +222,7 @@ async def test_receive_after_disconnect(connect):
         await connection.receive("x!1")
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_receive_after_disconnect_before_connect_begins(connect):
     connection = connect("x")
     await connection.close()
@@ -226,7 +230,7 @@ async def test_receive_after_disconnect_before_connect_begins(connect):
         await connection.receive("x!1")
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_disconnect_at_same_time_as_everything(connect):
     """
     If we disconnect before the connection is established, don't deadlock.
@@ -271,7 +275,7 @@ async def test_disconnect_at_same_time_as_everything(connect):
     assert isinstance(receive_r, ChannelClosed)
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_log_connection_refused(connect, caplog):
     """
     There's nowhere to report a connection error: log it.
