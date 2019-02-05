@@ -25,7 +25,7 @@ script:
   - pyflakes .
   - black --check .
   - isort --check-only --diff --recursive channels_rabbitmq tests
-  - pytest --verbose --log-level-cli=debug
+  - pytest --verbose --log-cli-level=debug
 
 deploy:
   provider: pypi

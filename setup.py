@@ -7,11 +7,7 @@ from channels_rabbitmq import __version__
 # We use the README as the long_description
 readme = open(join(dirname(__file__), "README.rst")).read()
 
-test_requires = [
-    "pytest~=3.6.0",
-    "pytest-asyncio~=0.8",
-    "pytest-timeout~=1.3.3",
-]
+test_requires = ["pytest~=3.6.0", "pytest-asyncio~=0.8", "pytest-timeout~=1.3.3"]
 
 
 setup(
