@@ -288,4 +288,5 @@ async def test_log_connection_refused(connect, caplog):
 
     assert "[Errno 111] Connect call failed" in caplog.text
     assert "will retry" in caplog.text
+
     await connection.close()

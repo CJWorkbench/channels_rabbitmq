@@ -593,7 +593,6 @@ class Connection:
             logger.debug('publish %r on %s', message, queue_name)
             await channel.publish(message, '', queue_name)
         except PublishFailed:
-            logger.debug('ChannelFull')
             raise ChannelFull()
         logger.debug('ok')
 
