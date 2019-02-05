@@ -7,8 +7,8 @@ from collections import defaultdict, deque
 import aioamqp
 import msgpack
 
-from aioamqp.exceptions import AioamqpException, ChannelClosed, \
-        PublishFailed, AmqpClosedConnection
+from aioamqp.exceptions import ChannelClosed, PublishFailed, \
+        AmqpClosedConnection
 from channels.exceptions import ChannelFull
 
 logger = logging.getLogger(__name__)
@@ -530,7 +530,7 @@ class Connection:
             elif not asgi_channel and not group:
                 raise RuntimeError("Message has neither channel nor group")
         except Exception:
-            await ack_message_if_we_can(channel, delivery_tag)
+            await ack_message_if_we_can(channel, envelope.delivery_tag)
             raise
 
         # Delay the ack until after the message is added to the queue. But
