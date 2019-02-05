@@ -27,11 +27,10 @@ Possible options for ``CONFIG`` are listed below.
 ``host``
 ~~~~~~~~
 
-The server to connect to, confirming to `connect()
-<https://aio-pika.readthedocs.io/en/latest/apidoc.html#aio_pika.connect>`_.
-To connect to a RabbitMQ cluster, you can use a DNS name that resolves to
-multiple nodes (in which case this layer will pick whichever the DNS server
-names first) or you can set the host by environment variable.
+URL of the server to connect to, adhering to `RabbitMQ spec
+<https://www.rabbitmq.com/uri-spec.html>`_. To connect to a RabbitMQ cluster,
+use a DNS server to resolve a hostname to multiple IP addresses, or set the
+``host`` URL by environment variable.
 
 ``expiry``
 ~~~~~~~~~~
@@ -91,9 +90,11 @@ unbinds during ``group_add()`` and ``group_remove()`` to ensure messages for
 any of its groups will reach it.
 
 RabbitMQ queues are ``exclusive``: when a client disconnects (through close or
-crash), RabbitMQ will delete the queue and unbind the groups. We use aio_pika's
-``robust_connect()``, which will restore the queue and bindings if the
-connection is reestablished.
+crash), RabbitMQ will delete the queue and unbind the groups.
+
+Django Channels' specification does not account for "connecting" and
+"disconnecting", so this layer is always connected. It will reconnect forever
+in the event loop's background, logging warnings each time the connect fails.
 
 Once a connection has been created, it pollutes the event loop so that
 ``async_to_sync()`` will destroy the connection if it was created within

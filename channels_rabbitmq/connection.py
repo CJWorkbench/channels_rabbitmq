@@ -1,35 +1,52 @@
 import asyncio
+import functools
 import logging
 import time
 from collections import defaultdict, deque
 
-import aio_pika
+import aioamqp
 import msgpack
-from aio_pika.exceptions import AMQPError, ChannelClosed
 
+from aioamqp.exceptions import AioamqpException, ChannelClosed, \
+        PublishFailed, AmqpClosedConnection
 from channels.exceptions import ChannelFull
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def serialize(message, **kwargs):
+GroupsExchange = 'groups'
+ReconnectDelay = 1.0  # seconds
+
+
+def serialize(body):
     """
     Serializes message to a byte string.
     """
-    value = msgpack.packb(message, use_bin_type=True)
-    value = aio_pika.Message(value, **kwargs)
-    return value
-
-
-def deserialize(message):
-    """
-    Deserializes from a byte string.
-    """
-    return msgpack.unpackb(message.body, raw=False)
+    return msgpack.packb(body, use_bin_type=True)
 
 
 def channel_to_queue_name(channel):
     return channel[: channel.index("!")]
+
+
+async def gather_without_leaking(tasks):
+    """
+    Run a bunch of tasks to completion, _then_ raise the first exception.
+
+    This differs from regular `asyncio.gather()`, which leaves tasks running on
+    the event loop without waiting for them to finish.
+
+    It also differs because it accepts a list, not varargs.
+
+    This looks like a hack: shouldn't it be part of asyncio instead? Why isn't
+    this the _default_? ... dunno.
+    """
+    try:
+        # Run, raising first exception
+        await asyncio.gather(*tasks)
+    except Exception:
+        # Wait for all tasks to finish, exceptional or not
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _wakeup_next(waiters):
@@ -80,12 +97,10 @@ class MultiQueue:
                 self._getters.append(getter)
 
                 try:
-                    await getter
-                except:
-                    getter.cancel()  # Just in case getter is not done yet.
-
+                    await getter  # raises ChannelClosed
+                    # trust _wakeup_next() and close() to clear self._getters
+                except asyncio.CancelledError:
                     self._getters.remove(getter)
-
                     raise
 
             item = self._queue.popleft()
@@ -107,34 +122,28 @@ class MultiQueue:
     def full(self):
         return self.n >= self.capacity
 
-    async def put_channel(self, channel, message):
+    async def put_channel(self, asgi_channel, message):
         if self._is_closed:
             return
 
         while self.full():
             putter = self.loop.create_future()
             self._putters.append(putter)
+
             try:
-                await putter
+                await putter  # raises ChannelClosed
+                # trust _wakeup_next and close() to clear self._putters
             except ChannelClosed:
-                # While RabbitMQ was sending us a message, we closed the
-                # connection. Since the getters would never finish, the putters
-                # would deadlock unless we sent an exception to them, too. This
-                # exception means we're closing down.
-                #
-                # Route `message` to nowhere. It _should_ be dropped.
+                # Drop the message. We're closed.
                 return
-            except:
-                putter.cancel()  # Just in case putter is not done yet
-
-                # Clean self._putters from canceled putters
+            except asyncio.CancelledError:
                 self._putters.remove(putter)
-
                 raise
 
         self.n += 1
-        self._out[channel].put(message)  # may create self._out[channel]
-        _wakeup_next(self._out[channel]._getters)
+        # may create self._out[asgi_channel]
+        self._out[asgi_channel].put(message)
+        _wakeup_next(self._out[asgi_channel]._getters)
 
     async def put_group(self, group, message):
         if self._is_closed:
@@ -143,36 +152,39 @@ class MultiQueue:
         if group not in self.local_groups:
             return  # don't create group
 
-        # Copy channel names, so we can iterate asynchronously without racing
-        channels = list(self.local_groups[group])
-        for channel in channels:
-            await self.put_channel(channel, message)
+        await gather_without_leaking(
+            [self.put_channel(asgi_channel, message)
+             for asgi_channel in self.local_groups[group]]
+        )
 
-    async def get(self, channel):
+    async def get(self, asgi_channel):
         if self._is_closed:
             raise ChannelClosed
 
         try:
-            # may create self._out[channel]
-            item = await self._out[channel].get()
-        finally:  # Even if there's a CanceledError
-            if not self._out[channel]._queue and not self._out[channel]._getters:
-                del self._out[channel]
+            # may create self._out[asgi_channel]
+            item = await self._out[asgi_channel].get()
+        finally:  # Even if there's an asyncio.CancelledError
+            if (
+                not self._out[asgi_channel]._queue
+                and not self._out[asgi_channel]._getters
+            ):
+                del self._out[asgi_channel]
         return item
 
-    def group_add(self, group, channel, group_expiry=86400):
+    def group_add(self, group, asgi_channel, group_expiry=86400):
         if self._is_closed:
             return None
 
         channels = self.local_groups[group]  # may create set
-        channels[channel] = time.time() + group_expiry
+        channels[asgi_channel] = time.time() + group_expiry
         return len(channels)
 
-    def group_discard(self, group, channel):
+    def group_discard(self, group, asgi_channel):
         """
-        Remove `channel` from `group` and return the number of channels left.
+        Remove `asgi_channel` from `group` and return n_channels_remaining.
 
-        Return None if the channel is not in the group.
+        Return None if the asgi_channel is not in the group.
         """
         if self._is_closed:
             return None
@@ -182,7 +194,7 @@ class MultiQueue:
 
         channels = self.local_groups[group]
         try:
-            del channels[channel]
+            del channels[asgi_channel]
         except KeyError:
             return None  # it was already removed
 
@@ -204,7 +216,19 @@ class MultiQueue:
         return ret
 
     def close(self):
+        """
+        Nullify pending puts; raise ChannelClosed on pending gets.
+        """
+        if self._is_closed:
+            return
+
         self._is_closed = True
+
+        # Cancel all puts
+        for waiter in self._putters:
+            if not waiter.done():
+                waiter.set_exception(ChannelClosed)
+        self._putters.clear()
 
         # Cancel all gets
         for out_queue in self._out.values():
@@ -213,11 +237,50 @@ class MultiQueue:
                     waiter.set_exception(ChannelClosed)
         self._out.clear()
 
-        # Cancel all puts
-        for waiter in self._putters:
-            if not waiter.done():
-                waiter.set_exception(ChannelClosed)
-        self._putters.clear()
+
+def stall_until_connected_or_closed(fn):
+    """
+    Suspend this awaitable until `self` is connected.
+
+    Call `await fn(self, channel, ...)` -- the connection object is
+    an `aioamqp` Connection which should be used until the end of the call. If
+    the connection drops mid-call, an exception will be raised.
+
+    Raise `ChannelClosed` if the connection is closed before `fn` can be
+    called.
+
+    This is vulnerable to races -- after all, there's no way to _guarantee_
+    connection. But it handles the basic cases:
+
+    * During startup, before connection, queue messages instead of sending.
+    * Handle shutdown, even during startup. (We'll connect then disconnect.)
+    """
+    @functools.wraps(fn)
+    async def inner(self, *args, **kwargs):
+        while not self._is_connected and not self._is_closed:
+            await self._connect_event.wait()
+
+        if self._is_closed:
+            raise ChannelClosed
+
+        return await fn(self, self._channel, *args, **kwargs)
+
+    return inner
+
+
+async def ack_message_if_we_can(channel, delivery_tag):
+    try:
+        await channel.basic_client_ack(delivery_tag)
+        logger.debug('Acked delivery %s', delivery_tag)
+    except ChannelClosed:
+        # we tried to ack/nack and failed because we're closed. Assume
+        # that's what the user wanted. It's not like we can acknowledge
+        # the message or raise an exception.
+        #
+        # Worst-case, we reconnect and receive the message again:
+        # At-least-once delivery.
+        logger.debug('ConnectionClosed acking delivery %s', delivery_tag)
+        pass
 
 
 class Connection:
@@ -270,7 +333,6 @@ class Connection:
         prefetch_count=10,
         expiry=60,
         group_expiry=86400,
-        command_timeout=10,
     ):
         self.loop = loop
         self.host = host
@@ -280,253 +342,346 @@ class Connection:
         self.expiry = expiry
         self.group_expiry = group_expiry
         self.queue_name = queue_name
-        self.command_timeout = command_timeout
 
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
         # the caller is going away: we'll delete the queue in that case.
         self._incoming_messages = MultiQueue(loop, local_capacity)
 
-        self._connection = None
+        # pending_puts: a "purgatory" for messages as we put them into
+        # incoming_messages.
+        #
+        # This is complex, so hold on.
+        #
+        # aioamqp will "await" our `_handle_message` callback, meaning it won't
+        # call anything until that callback returns. But handle_message can't
+        # ack a message until incoming_messages has <= self.local_capacity
+        # messages. (That's the whole point of local_capacity: to block acks,
+        # so the remote queue gets backlogged.)
+        #
+        # So handle_message needs to kick off "background" tasks -- using
+        # event_loop.create_task(). We need to manage those background tasks,
+        # so we can clean them up when we close.
+        #
+        # That's pending_puts: tasks running in the background. Each such task
+        # finishes by acking its message and deleting itself from this list.
+        self._pending_puts = set()
+
         self._is_closed = False
 
-        # self._send_lock is released when we're allowed to send commands to
-        # RabbitMQ with self._send_channel.
+        # self._is_connected: means self._protocol and self._channel are
+        # initialized and ready to use.
+        self._is_connected = False
+        self._protocol = None
+        self._transport = None
+        # self._connect_event: a transient variable that signals, "Something
+        # happened."
         #
-        # TODO optimize by building a pool of send channels. Each send waits
-        # for an ack, so we could benefit from parallel sends.
-        self._send_lock = asyncio.Semaphore(value=0, loop=loop)
-        self._send_lock.acquire()  # released when _send_channel is not None
-        self._send_channel = None
+        # When disconnected, lots of calls will wait on self._connect_event.
+        # When it gets set, that doesn't mean "we've connected": it just means,
+        # "check again whether self._is_connected".
+        self._connect_event = asyncio.Event(loop=loop)
 
-        # _groups_lock is released when _queue is set: that's when we're ready
-        # to subscribe the queue to groups. (On disconnect, RabbitMQ will
-        # automatically remove the subscription as it destroys the queue. On
-        # reconnect, aio_pika will automatically recrease the queue and
-        # its subscriptions.)
-        #
-        # Deadlock prevention: If you need self._groups_lock, acquire it
-        # _before_ self._send_lock.
-        self._groups_lock = asyncio.Semaphore(value=0, loop=loop)
-        self._groups_exchange = None
-        self._queue = None
+        # self.worker: Something to await, to know that _everything_ is finished
+        # (useful in unit tests when we actually want to disconnect).
+        self.worker = asyncio.ensure_future(self._connect_forever(), loop=loop)
 
-        loop.create_task(self._connect(loop))
+        # self.close() uses self._protocol and self._transport. Don't worry
+        # about them being stale: it's okay for self.close() to make spurious
+        # calls.
+        self._protocol = None
+        self._transport = None
 
-    async def _connect(self, loop):
+    async def _connect_forever(self):
         """
-        Connect to RabbitMQ and schedule disconnect on event-loop close.
+        Connect -- and reconnect -- to RabbitMQ, forevermore.
         """
         while not self._is_closed:
-            # Build connection. This does not mean there's an actual TCP
-            # connection! If connect fails, aio_pika returns a stub that
-            # retries in the background. We'll need to run other stuff on it
-            # before returning from _connect().
-            connection = await aio_pika.connect_robust(url=self.host, loop=loop)
-
-            # Create the queue before opening send channels, so our first send
-            # can only occur once the queue exists.
-            #
-            # Unlike connect_robust(), _begin_consuming() won't return on
-            # failure.
             try:
-                await self._begin_consuming(connection)
-                # Now set self._connection: we can close now.
-                self._connection = connection
-                break
-            except AMQPError as err:
-                log.warn("No connection to %s: %s; retrying in 1s", self.host, str(err))
-                await connection.close()
-                await asyncio.sleep(1)
-            except RuntimeError as err:
-                if err.args == ("Connection closed",):
-                    log.warn("No connection to %s; retrying in 1s", self.host)
-                    # No need to call connection.close() -- and indeed, it
-                    # seems to deadlock.
-                    await asyncio.sleep(1)
-                else:
-                    raise
+                await self._connect_and_run()
+            except (
+                AmqpClosedConnection,
+                ConnectionError,
+                OSError,
+            ) as err:
+                if self._is_closed:
+                    logger.debug("Connect/run on RabbitMQ failed: %r", err)
+                    # these aren't errors when the caller said close(). Not
+                    # really. AmqpClosedConnection is _expected_ even.
+                    return
 
-        if self._is_closed:
-            # Everybody who requests these locks will check this._is_closed
-            # after.
-            self._send_lock.release()
-            self._groups_lock.release()
-            return
+                logger.info(
+                    "Connection/run on RabbitMQ failed: %s; will retry in %fs",
+                    str(err), ReconnectDelay
+                )
+                await asyncio.sleep(ReconnectDelay)
+            except Exception:
+                logger.exception('Unhandled exception from aioamqp')
+                raise  # and crash
 
-        send_channel = await self._connection.channel(publisher_confirms=True)
-        self._send_channel = send_channel
+    def _notify_connect_event(self):
+        """
+        Notify anybody waiting for `self._connect_event` and reset it.
+        """
+        old_event = self._connect_event
+        if not old_event.is_set():
+            old_event.set()
+        self._connect_event = asyncio.Event()
+        # After we return, everyone waiting for `_connect_event` will wake up.
 
-        # Declare "groups" exchange once per time we connect. It will
-        # persist forever; spurious declarations do no harm.
+    async def _connect_and_run(self):
+        self._is_connected = False
+
+        logger.info('Channels connecting to RabbitMQ at %s', self.host)
+        transport, protocol = await aioamqp.from_url(self.host)
+        channel = await protocol.channel()
+
+        # Set publisher confirms -- so we can uphold the guarantees we promise
+        # in the Channels API.
+        await channel.confirm_select()
+
+        # Declare "groups" exchange. It may persist; spurious declarations
+        # (such as on reconnect) are harmless.
+        await channel.exchange_declare(GroupsExchange, "direct")
+
+        # Queue up the handling of messages.
         #
-        # We'll send to the group through self._send_channel.
-        self._groups_exchange = await self._send_channel.declare_exchange(
-            "groups", timeout=self.command_timeout
+        # This is an exclusive queue, because we want it to disappear when we
+        # shut down. (Otherwise we'd leak queues every deploy.) And since an
+        # exclusive queue disappears when we aren't connected, there's no way
+        # to preserve every message across connects. That's okay -- disconnect
+        # means one or two lost messages and nothing more.
+        await channel.queue_declare(
+            self.queue_name, exclusive=True,
+            arguments={
+                "x-max-length": self.remote_capacity,
+                "x-overflow": "reject-publish",
+                "x-message-ttl": int(self.expiry * 1000),
+            }
+        )
+        await channel.basic_qos(prefetch_count=self.prefetch_count)
+        # It's tempting to set no_ack=True, since this is an exclusive queue.
+        # But if we do that, how do we back-pressure? What happens when we
+        # receive too many messages -- do TCP buffers fill up and prevent other
+        # messages from moving through this channel? ... let's not investigate
+        # until speed or network traffic becomes an issue.
+        await channel.basic_consume(self._handle_message, self.queue_name)
+
+        self._is_connected = True
+        self._protocol = protocol
+        self._transport = transport
+        self._channel = channel
+
+        # Re-bind groups (after reconnect)
+        #
+        # We can guarantee that pending instances of `group_add()` and
+        # `group_remove()` won't run concurrently to us: if they started before
+        # we set self._channel (just now), they won't actually affect our queue
+        # (since it's exclusive=True).
+        groups = list(self._incoming_messages.local_groups.keys())
+        logger.debug("Rebinding groups to queue %s: %r",
+                     self.queue_name, groups)
+        # Schedule _all_ the binds. This guarantees they come before
+        # self.group_add() and self.group_discard() binds are called. So if
+        # we discard an already-added group, we'll be fine.
+        await gather_without_leaking(
+            [channel.queue_bind(self.queue_name, GroupsExchange,
+                                routing_key=group)
+             for group in groups]
         )
 
-        self._send_lock.release()  # We can bind groups to the queue now
-        self._groups_lock.release()  # We can bind groups to the queue now
+        self._notify_connect_event()  # anyone waiting for us?
 
-    async def _begin_consuming(self, connection):
+        # and now run until eternity...
+        if not self._is_closed:
+            # What happens on error? One of two things:
+            #
+            # 1. RabbitMQ closes self._channel. Why would it do this? Well,
+            #    that's not for us to ask. The most common case is:
+            # 2. RabbitMQ closes self._protocol. If it does, self._protocol
+            #    will go and close self._channel.
+            # 3. Network error. self._protocol.worker will return in that
+            #    case.
+            #
+            # In cases 2 and 3, `self._protocol.run()` will raise
+            # AmqpClosedConnection, close connections, and bail. In case 1, we
+            # need to force the close ourselves.
+            await self._channel.close_event.wait()  # case 1, 2, 3
+
+        # case 1 only: if the channel was closed and the connection wasn't,
+        # wipe out the connection. (Otherwise, this is a no-op.)
+        await protocol.close()
+
+        # await protocol.worker so that every Future that's been
+        # created gets awaited.
+        await protocol.worker
+
+    async def _handle_message(self, channel, body, envelope, properties):
+        try:
+            d = msgpack.unpackb(body, raw=False)
+            asgi_channel = d.get("__asgi_channel__")
+            group = d.get("__asgi_group__")
+
+            logger.debug("Received message %s on ASGI channel/group %s",
+                         envelope.delivery_tag, asgi_channel or group)
+
+            if asgi_channel and group:
+                raise RuntimeError("Message has both channel and group")
+            elif not asgi_channel and not group:
+                raise RuntimeError("Message has neither channel nor group")
+        except Exception:
+            await ack_message_if_we_can(channel, delivery_tag)
+            raise
+
+        # Delay the ack until after the message is added to the queue. But
+        # _return_ immediately.
+        #
+        # This works around https://github.com/Polyconseil/aioamqp/issues/149
+        task = asyncio.create_task(self._handle_message_background(
+            channel,
+            asgi_channel,
+            group,
+            d,
+            envelope.delivery_tag
+        ))
+        self._pending_puts.add(task)
+        # Cleanup: remove from _pending_puts when done.
+        task.add_done_callback(self._pending_puts.remove)
+
+    async def _handle_message_background(self, channel, asgi_channel, group,
+                                         data, delivery_tag):
         """
-        Reading messages from RabbitMQ until connection close.
+        Deliver `data` to `asgi_channel` or `group`, then ack.
+
+        See comment on `self._pending_puts`. To sum up: we need to schedule
+        this code to run later, so we don't block aioamqp from handling network
+        traffic.
         """
+        # Put into _incoming_messages. This shouldn't raise anything, though
+        # CancelledError is possible in theory. (CancelledError should not be
+        # caught.)
+        if asgi_channel:
+            # Put the message. Back-pressure if
+            # self._incoming_messages is at capacity.
+            await self._incoming_messages.put_channel(asgi_channel, data)
+        else:
+            await self._incoming_messages.put_group(group, data)
 
-        async def consume(message):
-            try:
-                with message.process():  # acks when finished
-                    d = deserialize(message)
-                    channel = d.get("__asgi_channel__")
-                    group = d.get("__asgi_group__")
+        await ack_message_if_we_can(channel, delivery_tag)
 
-                    if channel and group:
-                        raise RuntimeError("Message has both channel and group")
-                    elif not channel and not group:
-                        raise RuntimeError("Message has neither channel nor group")
-
-                    if channel:
-                        # Put the message. Back-pressure if
-                        # self._incoming_messages is at capacity.
-                        await self._incoming_messages.put_channel(channel, d)
-                    else:
-                        await self._incoming_messages.put_group(group, d)
-            except aio_pika.exceptions.ChannelClosed:
-                # we tried to ack/nack and failed because we're closed. Assume
-                # that's what the user wanted.
-                pass
-
-        channel = await connection.channel()
-        await channel.set_qos(
-            prefetch_count=self.prefetch_count, timeout=self.command_timeout
-        )
-        arguments = {
-            "x-max-length": self.remote_capacity,
-            "x-overflow": "reject-publish",
-        }
-        self._queue = await channel.declare_queue(
-            name=self.queue_name,
-            durable=False,
-            exclusive=True,
-            arguments=arguments,
-            timeout=self.command_timeout,
-        )
-
-        # We'll set no_ack=False so we get back-pressure in consume().
-        await self._queue.consume(consume, no_ack=False, timeout=self.command_timeout)
-
-    async def send(self, channel, message):
+    @stall_until_connected_or_closed
+    async def send(self, channel, asgi_channel, message):
         """
         Send a message onto a (generic or specific) channel.
 
         This publishes through RabbitMQ even when sending from localhost to
         localhost. This gives approximate global ordering.
-        """
-        message["__asgi_channel__"] = channel
-        message = serialize(message, expiration=int(self.expiry * 1000))
 
-        queue_name = channel_to_queue_name(channel)
+        Usage:
+
+            connection.send({'foo': 'bar'})
+        """
+        message["__asgi_channel__"] = asgi_channel
+        message = msgpack.packb(message, use_bin_type=True)
+
+        queue_name = channel_to_queue_name(asgi_channel)
 
         # Publish with publisher_confirms=True. Assume the server is configured
         # with `overflow: reject-publish`, so we get a basic.nack if the queue
         # length is exceeded.
-        async with self._send_lock:
-            if self._is_closed:
-                return
+        try:
+            logger.debug('publish %r on %s', message, queue_name)
+            await channel.publish(message, '', queue_name)
+        except PublishFailed:
+            logger.debug('ChannelFull')
+            raise ChannelFull()
+        logger.debug('ok')
 
-            try:
-                queued = await self._send_channel.default_exchange.publish(
-                    message, routing_key=queue_name
-                )
-            except TypeError:
-                # https://github.com/mosquito/aio-pika/issues/155
-                queued = False
-
-            if not queued:
-                raise ChannelFull()
-
-    async def receive(self, channel):
+    async def receive(self, asgi_channel):
         """
         Receive the first message that arrives on the channel.
 
         If more than one coroutine waits on the same channel, only one waiter
         will receive the message when it arrives.
         """
-        assert channel_to_queue_name(channel) == self.queue_name
-        return await self._incoming_messages.get(channel)
+        assert channel_to_queue_name(asgi_channel) == self.queue_name
+        return await self._incoming_messages.get(asgi_channel)
 
-    async def group_add(self, group, channel):
+    async def group_add(self, group, asgi_channel):
         assert (
-            channel_to_queue_name(channel) == self.queue_name
+            channel_to_queue_name(asgi_channel) == self.queue_name
         ), "This layer won't let you add a channel from another connection"
 
-        # Lock before doing comparisons, so we don't race. We don't want to
-        # duplicate bindings on the server, regardless of the sequence of
-        # add+discard.
-        async with self._groups_lock:
-            if self._is_closed:
-                return
-
-            n_bindings = self._incoming_messages.group_add(
-                group, channel, self.group_expiry
+        n_bindings = self._incoming_messages.group_add(
+            group, asgi_channel, self.group_expiry
+        )
+        if n_bindings == 1 and self._is_connected and not self._is_closed:
+            logger.debug("Binding queue %s to group %s", self.queue_name,
+                         group)
+            # This group is new to our connection-level queue. Make a
+            # connection-level binding.
+            #
+            # Don't worry about races: if we disconnect somewhere around here,
+            # we'll re-bind during reconnect.
+            await self._channel.queue_bind(
+                self.queue_name,
+                GroupsExchange,
+                routing_key=group
             )
-            if n_bindings == 1:
-                # This group is new to our connection-level queue. Make a
-                # connection-level binding.
-                async with self._send_lock:
-                    await self._queue.bind("groups", routing_key=group)
 
-    async def group_discard(self, group, channel):
+    async def group_discard(self, group, asgi_channel):
         assert (
-            channel_to_queue_name(channel) == self.queue_name
+            channel_to_queue_name(asgi_channel) == self.queue_name
         ), "This layer won't let you remove a channel from another connection"
 
-        # Lock before doing comparisons, so we don't race. We don't want to
-        # duplicate bindings on the server, regardless of the sequence of
-        # add+discard.
-        async with self._groups_lock:
-            if self._is_closed:
-                return
+        n_bindings = self._incoming_messages.group_discard(group, asgi_channel)
+        if n_bindings == 0 and self._is_connected and not self._is_closed:
+            logger.debug("Unbinding queue %s from group %s", self.queue_name,
+                         group)
+            # This group is new to our connection-level queue. Make a
+            # connection-level binding.
+            #
+            # Don't worry about races: if we disconnect somewhere around here,
+            # we won't re-bind during reconnect.
+            await self._channel.queue_unbind(
+                self.queue_name,
+                GroupsExchange,
+                routing_key=group
+            )
 
-            n_bindings = self._incoming_messages.group_discard(group, channel)
-            if n_bindings == 0:
-                # On this connection-level queue, we no longer have any
-                # channels subscribed to this group. Kill the connection-level
-                # binding.
-                async with self._send_lock:
-                    await self._queue.unbind("groups", routing_key=group)
-
-    async def group_send(self, group, message):
+    @stall_until_connected_or_closed
+    async def group_send(self, channel, group, message):
         message["__asgi_group__"] = group
-        message = serialize(message, expiration=int(self.expiry * 1000))
+        message = msgpack.packb(message, use_bin_type=True)
 
-        async with self._send_lock:
-            if self._is_closed:
-                return
+        logger.debug("group_send %r to %s", message, group)
 
-            try:
-                await self._groups_exchange.publish(message, routing_key=group)
-            except TypeError:
-                # https://github.com/mosquito/aio-pika/issues/155
-                #
-                # The Channels protocol has no way of reporting this error.
-                # Just silently delete the message.
-                log.warn("Aborting send to group %s: a queue is at capacity", group)
-                pass
+        try:
+            await channel.publish(message, GroupsExchange, routing_key=group)
+        except PublishFailed:
+            # The Channels protocol has no way of reporting this error.
+            # Just silently delete the message.
+            logger.warning("Aborting send to group %s: a queue is at capacity",
+                           group)
+            pass
 
     async def close(self):
-        if self._is_closed:
-            return
-
         self._is_closed = True
-        async with self._send_lock:
+
+        # we're connected ... so disconnect!
+        if self._protocol:
             try:
-                if self._connection:
-                    await self._connection.close()
-            except AMQPError as err:
-                # Don't raise. Assume failed disconnect leaves us in the state
-                # we want.
-                log.warn("AMQPError while closing connection: %s", str(err))
-                raise
-            finally:
-                self._incoming_messages.close()
+                await self._protocol.close()  # may be spurious
+            except AmqpClosedConnection:
+                pass
+        if self._transport:
+            self._transport.close()  # may be spurious
+
+        # Wait for self._connect_forever() to exit. That'll mean all transient
+        # variables (including self._protocol.worker) are cleaned up.
+        await self.worker
+
+        # close our queues. pending_puts' messages will be ignored, and the
+        # tasks will be completed.
+        self._incoming_messages.close()
+        await gather_without_leaking(list(self._pending_puts))

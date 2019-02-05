@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from aio_pika.exceptions import ChannelClosed
+from aioamqp.exceptions import ChannelClosed
 
 from channels.exceptions import ChannelFull
 from channels_rabbitmq.connection import Connection
@@ -14,11 +14,13 @@ async def connect():
     connections = []
 
     def factory(queue_name, **kwargs):
-        kwargs = {"host": HOST, "command_timeout": 0.5, **kwargs}
+        kwargs = {
+            'host': HOST,
+            'queue_name': queue_name,
+            **kwargs
+        }
 
-        connection = Connection(
-            loop=asyncio.get_event_loop(), queue_name=queue_name, **kwargs
-        )
+        connection = Connection(loop=asyncio.get_event_loop(), **kwargs)
         connections.append(connection)
         return connection
 
@@ -214,6 +216,15 @@ async def test_groups_channel_full(connect):
 @pytest.mark.asyncio
 async def test_receive_after_disconnect(connect):
     connection = connect("x")
+    await asyncio.sleep(0)  # start connecting (it happens in the background)
+    await connection.close()
+    with pytest.raises(ChannelClosed):
+        await connection.receive("x!1")
+
+
+@pytest.mark.asyncio
+async def test_receive_after_disconnect_before_connect_begins(connect):
+    connection = connect("x")
     await connection.close()
     with pytest.raises(ChannelClosed):
         await connection.receive("x!1")
@@ -225,6 +236,7 @@ async def test_disconnect_at_same_time_as_everything(connect):
     If we disconnect before the connection is established, don't deadlock.
     """
     connection = connect("x")
+    await asyncio.sleep(0)  # start connecting (it happens in the background)
 
     # Schedule all these commands to run simultaneously. At this point, the
     # connection isn't established yet and no queue has been created.
@@ -256,9 +268,9 @@ async def test_disconnect_at_same_time_as_everything(connect):
     )
 
     assert close_r is None
-    assert send_r is None
+    assert isinstance(send_r, ChannelClosed)
     assert group_add_r is None
-    assert group_send_r is None
+    assert isinstance(group_send_r, ChannelClosed)
     assert group_discard_r is None
     assert isinstance(receive_r, ChannelClosed)
 
@@ -273,14 +285,7 @@ async def test_log_connection_refused(connect, caplog):
     """
     connection = connect("x", host="amqp://guest:guest@localhost:4561/")
     await asyncio.sleep(0.5)  # Enough time to try connecting once
-    refused_message = (
-        "Connection refused: 500 - Connection to 127.0.0.1:4561 failed: "
-        "[Errno 111] Connection refused"
-    )
-    retry_message = (
-        "No connection to amqp://guest:guest@localhost:4561/; retrying in 1s"
-    )
 
-    assert any(r.getMessage() == refused_message for r in caplog.records)
-    assert any(r.getMessage() == retry_message for r in caplog.records)
+    assert "[Errno 111] Connect call failed" in caplog.text
+    assert "will retry" in caplog.text
     await connection.close()
