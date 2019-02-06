@@ -436,6 +436,8 @@ class Connection:
 
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
         transport, protocol = await aioamqp.from_url(self.host)
+
+        logger.debug("Connected; setting up")
         channel = await protocol.channel()
 
         # Set publisher confirms -- so we can uphold the guarantees we promise
@@ -504,12 +506,17 @@ class Connection:
             # In cases 2 and 3, `self._protocol.run()` will raise
             # AmqpClosedConnection, close connections, and bail. In case 1, we
             # need to force the close ourselves.
+            logger.info("Monitoring for network interruptions")
             await self._channel.close_event.wait()  # case 1, 2, 3
+
+        logger.info("Disconnecting")
 
         # case 1 only: if the channel was closed and the connection wasn't,
         # wipe out the connection. (Otherwise, this is a no-op.)
         await protocol.close()
         transport.close()  # probably spurious
+
+        logger.debug("Cleaning up after disconnect")
 
         # await protocol.worker so that every Future that's been
         # created gets awaited.
