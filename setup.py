@@ -25,7 +25,7 @@ setup(
     install_requires=[
         "aioamqp~=0.12.0",
         "asgiref~=2.1",
-        "msgpack~=0.5.2",
+        "msgpack~=0.6.1",
         "channels~=2.0",
     ],
     extras_require={"tests": test_requires},
