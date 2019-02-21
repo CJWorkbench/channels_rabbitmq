@@ -135,7 +135,8 @@ To deploy
 Use `semver <https://semver.org/>`_.
 
 #. Change ``__version__`` in ``channels_rabbitmq/__init__.py``.
-#. ``git commit channels_rabbitmq/__init__.py -m 'vX.X.X'`` but don't push.
+#. Add to ``CHANGELOG.rst``.
+#. ``git commit channels_rabbitmq/__init__.py CHANGELOG.rst -m 'vX.X.X'`` but don't push.
 #. ``git tag vX.X.X``
 #. ``git push --tags && git push``
 
