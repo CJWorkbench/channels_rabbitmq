@@ -76,6 +76,12 @@ already has ``local_capacity - 1`` messages in memory. Higher settings
 accelerate throughput a little bit; lower settings help adhere to
 ``local_capacity`` more rigorously.
 
+``connection_options``
+~~~~~~~~~~~~~~~~~~
+
+A dictionary of values that will be passed as kwargs when aioamqp attempts
+to connect to the RabbitMQ server.
+
 Design decisions
 ----------------
 

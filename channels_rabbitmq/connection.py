@@ -334,7 +334,8 @@ class Connection:
         remote_capacity=100,
         prefetch_count=10,
         expiry=60,
-        group_expiry=86400
+        group_expiry=86400,
+        connection_options={},
     ):
         self.loop = loop
         self.host = host
@@ -344,6 +345,7 @@ class Connection:
         self.expiry = expiry
         self.group_expiry = group_expiry
         self.queue_name = queue_name
+        self.connection_options = connection_options
 
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
@@ -435,7 +437,8 @@ class Connection:
         self._is_connected = False
 
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
-        transport, protocol = await aioamqp.from_url(self.host)
+        transport, protocol = await aioamqp.from_url(self.host,
+                                                     **self.connection_options)
 
         logger.debug("Connected; setting up")
         channel = await protocol.channel()
