@@ -437,8 +437,9 @@ class Connection:
         self._is_connected = False
 
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
-        transport, protocol = await aioamqp.from_url(self.host,
-                                                     **self.connection_options)
+        transport, protocol = await aioamqp.from_url(
+            self.host, **self.connection_options
+        )
 
         logger.debug("Connected; setting up")
         channel = await protocol.channel()
