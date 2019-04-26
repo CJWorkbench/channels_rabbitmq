@@ -31,8 +31,7 @@ URL of the server to connect to, adhering to `RabbitMQ spec
 <https://www.rabbitmq.com/uri-spec.html>`_. To connect to a RabbitMQ cluster,
 use a DNS server to resolve a hostname to multiple IP addresses.
 channels_rabbitmq will automatically reconnect if at least one of them is
-reachable in case of a disconnection. You can also set the ``host`` URL by
-environment variable.
+reachable in case of a disconnection.
 
 ``expiry``
 ~~~~~~~~~~
