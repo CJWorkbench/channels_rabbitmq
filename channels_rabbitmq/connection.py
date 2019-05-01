@@ -334,7 +334,7 @@ class Connection:
         remote_capacity=100,
         prefetch_count=10,
         expiry=60,
-        group_expiry=86400,
+        group_expiry=86400
     ):
         self.loop = loop
         self.host = host
