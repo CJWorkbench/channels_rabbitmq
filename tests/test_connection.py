@@ -1,6 +1,6 @@
 import asyncio
-from pathlib import Path
 import ssl
+from pathlib import Path
 
 import pytest
 from aioamqp.exceptions import ChannelClosed
@@ -10,11 +10,11 @@ from channels_rabbitmq.connection import Connection
 
 HOST = "amqp://guest:guest@localhost/"
 SSL_CONTEXT = ssl.create_default_context(
-    cafile=str(Path(__file__).parent.parent / 'ssl' / 'server.cert'),
+    cafile=str(Path(__file__).parent.parent / "ssl" / "server.cert")
 )
 SSL_CONTEXT.load_cert_chain(
-    certfile=str(Path(__file__).parent.parent / 'ssl' / 'client.certchain'),
-    keyfile=str(Path(__file__).parent.parent / 'ssl' / 'client.key'),
+    certfile=str(Path(__file__).parent.parent / "ssl" / "client.certchain"),
+    keyfile=str(Path(__file__).parent.parent / "ssl" / "client.key"),
 )
 
 
@@ -31,7 +31,7 @@ async def connect():
             "host": HOST,
             "queue_name": queue_name,
             "ssl_context": SSL_CONTEXT,
-            **kwargs
+            **kwargs,
         }
 
         connection = Connection(loop=asyncio.get_event_loop(), **kwargs)

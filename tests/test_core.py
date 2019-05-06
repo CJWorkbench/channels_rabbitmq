@@ -1,5 +1,6 @@
-import pytest
 import threading
+
+import pytest
 
 from asgiref.sync import async_to_sync
 from channels_rabbitmq.core import RabbitmqChannelLayer
@@ -122,7 +123,7 @@ async def test_groups_within_layer():
 def test_async_to_sync_from_thread():
     def run():
         layer = RabbitmqChannelLayer(host=HOST)
-        async_to_sync(layer.group_send)('x', {'type': 'message.1'})
+        async_to_sync(layer.group_send)("x", {"type": "message.1"})
         assert True
 
     thread = threading.Thread(target=run, daemon=True)

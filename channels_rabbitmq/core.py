@@ -50,7 +50,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         prefetch_count=10,
         expiry=60,
         group_expiry=86400,
-        ssl_context=None
+        ssl_context=None,
     ):
         self.host = host
         self.local_capacity = local_capacity
@@ -90,7 +90,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             prefetch_count=self.prefetch_count,
             expiry=self.expiry,
             group_expiry=self.group_expiry,
-            ssl_context=self.ssl_context
+            ssl_context=self.ssl_context,
         )
         self._connections[loop] = connection  # assume lock is held
 
