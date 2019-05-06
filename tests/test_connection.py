@@ -198,9 +198,27 @@ async def test_groups_channel_full(connect):
     """
     connection = connect("x", local_capacity=1, remote_capacity=1, prefetch_count=1)
     await connection.group_add("test-group", "x!1")
-    await connection.group_send("test-group", {"type": "message.1"})  # acked
-    await connection.group_send("test-group", {"type": "message.2"})  # unacked
-    await connection.group_send("test-group", {"type": "message.3"})  # ready
+
+    # Message 1:
+    # * server acks and control flow returns.
+    # * consumer receives message in background, adds it to queue, acks it.
+    # After this, local_capacity is full.
+    await connection.group_send("test-group", {"type": "message.1"})
+    # Wait a few ms to make sure the message reaches the consumer
+    await asyncio.sleep(0.01)
+
+    # Message 2:
+    # * server acks and control flow returns.
+    # * consumer receives message and stalls trying to add it to queue. No more
+    #   consuming happens: prefetch_count is full.
+    await connection.group_send("test-group", {"type": "message.2"})
+    # Wait a few ms to make sure the message reaches the consumer
+    await asyncio.sleep(0.01)
+
+    # Message 3:
+    # * server acks and control flow returns.
+    # After this, remote_capacity is full.
+    await connection.group_send("test-group", {"type": "message.3"})
     await connection.group_send("test-group", {"type": "message.4"})  # rejected
     await connection.group_send("test-group", {"type": "message.5"})  # rejected
 
