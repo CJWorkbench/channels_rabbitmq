@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+import ssl
 
 import pytest
 from aioamqp.exceptions import ChannelClosed
@@ -7,6 +9,13 @@ from channels.exceptions import ChannelFull
 from channels_rabbitmq.connection import Connection
 
 HOST = "amqp://guest:guest@localhost/"
+SSL_CONTEXT = ssl.create_default_context(
+    cafile=str(Path(__file__).parent.parent / 'ssl' / 'server.cert'),
+)
+SSL_CONTEXT.load_cert_chain(
+    certfile=str(Path(__file__).parent.parent / 'ssl' / 'client.certchain'),
+    keyfile=str(Path(__file__).parent.parent / 'ssl' / 'client.key'),
+)
 
 
 def ASYNC_TEST(fn):
@@ -18,7 +27,12 @@ async def connect():
     connections = []
 
     def factory(queue_name, **kwargs):
-        kwargs = {"host": HOST, "queue_name": queue_name, **kwargs}
+        kwargs = {
+            "host": HOST,
+            "queue_name": queue_name,
+            "ssl_context": SSL_CONTEXT,
+            **kwargs
+        }
 
         connection = Connection(loop=asyncio.get_event_loop(), **kwargs)
         connections.append(connection)
@@ -214,6 +228,20 @@ async def test_groups_channel_full(connect):
 
 
 @ASYNC_TEST
+async def test_groups_no_such_group(connect):
+    """
+    Tests that group_send does nothing if there is no such group
+    """
+    connection = connect("x")
+    await connection.group_send("my-group", {"type": "message.1"})
+
+    # Now create the group, and check that new messages to that group will work
+    await connection.group_add("my-group", "x!1")
+    await connection.group_send("my-group", {"type": "message.2"})
+    assert (await connection.receive("x!1"))["type"] == "message.2"
+
+
+@ASYNC_TEST
 async def test_receive_after_disconnect(connect):
     connection = connect("x")
     await asyncio.sleep(0)  # start connecting (it happens in the background)
@@ -290,3 +318,13 @@ async def test_log_connection_refused(connect, caplog):
     assert "will retry" in caplog.text
 
     await connection.close()
+
+
+@ASYNC_TEST
+async def test_no_ssl(connect):
+    """
+    Connect through TCP, without TLS.
+
+    Assumes the server is listening over both a TLS port and a no-TLS port.
+    """
+    connect("x", ssl_context=None)

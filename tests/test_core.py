@@ -1,4 +1,5 @@
 import pytest
+import threading
 
 from asgiref.sync import async_to_sync
 from channels_rabbitmq.core import RabbitmqChannelLayer
@@ -116,3 +117,14 @@ async def test_groups_within_layer():
     # channel2 is unsubscribed. It should receive _other_ messages, though.
     await layer.send(channel2, {"type": "message.2"})
     assert (await layer.receive(channel2))["type"] == "message.2"
+
+
+def test_async_to_sync_from_thread():
+    def run():
+        layer = RabbitmqChannelLayer(host=HOST)
+        async_to_sync(layer.group_send)('x', {'type': 'message.1'})
+        assert True
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join()
