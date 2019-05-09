@@ -1,3 +1,10 @@
+v1.1.0 - 2019-05-09
+
+* Add ``ssl_context`` configuration option [issue #2]
+* Upgrade to aioamqp 0.13
+* Avoid a 'Connection lost exc=None' warning when disconnecting from a thread
+  with its own event loop [issue #4]
+
 v1.0.1 - 2019-05-01
 ~~~~~~~~~~~~~~~~~~~
 
