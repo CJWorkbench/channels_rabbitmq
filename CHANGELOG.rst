@@ -1,3 +1,9 @@
+v1.0.1 - 2019-05-01
+~~~~~~~~~~~~~~~~~~~
+
+* Experimental support for Python 3.5. (There's no test coverage; use at your
+  own risk!)
+
 v1.0.0 - 2019-04-24
 ~~~~~~~~~~~~~~~~~~~
 
