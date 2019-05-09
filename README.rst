@@ -147,13 +147,7 @@ If you have Docker, here's how to start a development server::
          -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
          rabbitmq:3.7.8-management-alpine
 
-
-``docker run --rm -it -p 5672:5672 rabbitmq:3.7.8-alpine``
-
-Alternatively, you can run it with a management interface at
-http://localhost:15672:
-
-``docker run --rm -it -p 5672:5672 -p 15672:15672 rabbitmq:3.7.8-management-alpine``
+You can access the RabbitMQ management interface at http://localhost:15672.
 
 Contributing
 ------------
@@ -161,9 +155,23 @@ Contributing
 To add features and fix bugs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-docker run --rm -it -p 5672:5672 -p 5671:5671 -p 15672:15672 -v "/$(pwd)"/ssl:/ssl -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert -e RABBITMQ_SSL_KEYFILE=/ssl/server.key -e RABBITMQ_SSL_VERIFY=verify_peer -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true rabbitmq:3.7.8-alpine
+First, start a development RabbitMQ server::
 
-#. ``docker run --rm -it -p 5672:5672 -p 15672:15672 rabbitmq:3.7.8-management-alpine``
+    ssl/prepare-certs.sh  # Create SSL certificates used in tests
+    docker run --rm -it \
+         -p 5671:5671 \
+         -p 5672:5672 \
+         -p 15672:15672 \
+         -v "/$(pwd)"/ssl:/ssl \
+         -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert \
+         -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert \
+         -e RABBITMQ_SSL_KEYFILE=/ssl/server.key \
+         -e RABBITMQ_SSL_VERIFY=verify_peer \
+         -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
+         rabbitmq:3.7.8-management-alpine
+
+Now take on the development cycle:
+
 #. ``python ./setup.py pytest`` # to ensure tests pass.
 #. Write new tests in ``tests/`` and make sure they fail.
 #. Write new code in ``channels_rabbitmq/`` to make the tests pass.
