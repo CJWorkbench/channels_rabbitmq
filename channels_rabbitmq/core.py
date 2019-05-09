@@ -79,7 +79,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         # Choose queue name here: that way we can declare it on RabbitMQ with
         # exclusive=True and have it survive reconnections.
         rand = "".join(random.choice(string.ascii_letters) for i in range(12))
-        queue_name = f"channels_{rand}"
+        queue_name = "channels_{rand}".format(rand=rand)
 
         connection = Connection(
             loop,
