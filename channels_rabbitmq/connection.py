@@ -335,7 +335,7 @@ class Connection:
         prefetch_count=10,
         expiry=60,
         group_expiry=86400,
-        ssl_context=None
+        ssl_context=None,
     ):
         self.loop = loop
         self.host = host
