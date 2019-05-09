@@ -18,6 +18,7 @@ Then set up the channel layer in your Django settings file like so::
             "BACKEND": "channels_rabbitmq.core.RabbitmqChannelLayer",
             "CONFIG": {
                 "host": "amqp://guest:guest@127.0.0.1/asgi",
+                # "ssl_context": ... (optional)
             },
         },
     }
@@ -76,6 +77,29 @@ already has ``local_capacity - 1`` messages in memory. Higher settings
 accelerate throughput a little bit; lower settings help adhere to
 ``local_capacity`` more rigorously.
 
+``ssl_context``
+~~~~~~~~~~~~~~~
+
+An `SSL context
+<https://docs.python.org/3/library/ssl.html#ssl-contexts>`_. Changes the
+default ``host`` port to 5671 (instead of 5672).
+
+For instance, to connect to an TLS RabbitMQ service that will verify your
+client::
+
+    import ssl
+    ssl_context = ssl.create_default_context(
+        cafile=str(Path(__file__).parent.parent / 'ssl' / 'server.cert'),
+    )
+    ssl_context.load_cert_chain(
+        certfile=str(Path(__file__).parent.parent / 'ssl' / 'client.certchain'),
+        keyfile=str(Path(__file__).parent.parent / 'ssl' / 'client.key'),
+    )
+    CHANNEL_LAYERS['default']['CONFIG']['ssl_context'] = ssl_context
+
+By default, there is no SSL context; all messages (and passwords) are
+are transmitted in cleartext.
+
 Design decisions
 ----------------
 
@@ -109,14 +133,22 @@ Dependencies
 
 You'll need Python 3.6+ (lower hasn't been tested) and a RabbitMQ server.
 
-If you have Docker, here's how to start a development server:
+If you have Docker, here's how to start a development server::
 
-``docker run --rm -it -p 5672:5672 rabbitmq:3.7.8-alpine``
+    ssl/prepare-certs.sh  # Create SSL certificates used in tests
+    docker run --rm -it \
+         -p 5671:5671 \
+         -p 5672:5672 \
+         -p 15672:15672 \
+         -v "/$(pwd)"/ssl:/ssl \
+         -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert \
+         -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert \
+         -e RABBITMQ_SSL_KEYFILE=/ssl/server.key \
+         -e RABBITMQ_SSL_VERIFY=verify_peer \
+         -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
+         rabbitmq:3.7.8-management-alpine
 
-Alternatively, you can run it with a management interface at
-http://localhost:15672:
-
-``docker run --rm -it -p 5672:5672 -p 15672:15672 rabbitmq:3.7.8-management-alpine``
+You can access the RabbitMQ management interface at http://localhost:15672.
 
 Contributing
 ------------
@@ -124,7 +156,23 @@ Contributing
 To add features and fix bugs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#. ``docker run --rm -it -p 5672:5672 -p 15672:15672 rabbitmq:3.7.8-management-alpine``
+First, start a development RabbitMQ server::
+
+    ssl/prepare-certs.sh  # Create SSL certificates used in tests
+    docker run --rm -it \
+         -p 5671:5671 \
+         -p 5672:5672 \
+         -p 15672:15672 \
+         -v "/$(pwd)"/ssl:/ssl \
+         -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert \
+         -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert \
+         -e RABBITMQ_SSL_KEYFILE=/ssl/server.key \
+         -e RABBITMQ_SSL_VERIFY=verify_peer \
+         -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
+         rabbitmq:3.7.8-management-alpine
+
+Now take on the development cycle:
+
 #. ``python ./setup.py pytest`` # to ensure tests pass.
 #. Write new tests in ``tests/`` and make sure they fail.
 #. Write new code in ``channels_rabbitmq/`` to make the tests pass.

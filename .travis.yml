@@ -9,10 +9,11 @@ services:
   - docker
 
 before_install:
+  - ssl/prepare-certs.sh
   # Use Docker rabbitmq instead of Travis'. Travis's gave us test failures
   # with our ChannelFull features, possibly because of feature differences.
   - docker pull rabbitmq:3.7.8-alpine
-  - docker run --rm -d -p 5672:5672 rabbitmq:3.7.8-alpine
+  - docker run --rm -d -p 5671:5671 -p 5672:5672 -v "/${TRAVIS_BUILD_DIR}"/ssl:/ssl -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert -e RABBITMQ_SSL_KEYFILE=/ssl/server.key -e RABBITMQ_SSL_VERIFY=verify_peer -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true rabbitmq:3.7.8-alpine
   # Now it'll start up while we're doing our install. There's a race, but
   # it's extremely likely rabbitmq will be up before pytest starts.
 

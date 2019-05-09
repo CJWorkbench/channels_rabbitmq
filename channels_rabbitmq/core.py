@@ -50,6 +50,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         prefetch_count=10,
         expiry=60,
         group_expiry=86400,
+        ssl_context=None
     ):
         self.host = host
         self.local_capacity = local_capacity
@@ -57,6 +58,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         self.prefetch_count = prefetch_count
         self.expiry = expiry
         self.group_expiry = 86400
+        self.ssl_context = ssl_context
 
         # In inefficient client code (e.g., async_to_sync()), there may be
         # several send() or receive() calls within different event loops --
@@ -88,6 +90,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             prefetch_count=self.prefetch_count,
             expiry=self.expiry,
             group_expiry=self.group_expiry,
+            ssl_context=self.ssl_context
         )
         self._connections[loop] = connection  # assume lock is held
 

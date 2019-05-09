@@ -23,7 +23,7 @@ setup(
     packages=find_packages(exclude=["tests"]),
     include_package_data=True,
     install_requires=[
-        "aioamqp~=0.12.0",
+        "aioamqp~=0.13.0",
         "asgiref~=3.1.2",
         "msgpack~=0.6.1",
         "channels~=2.2.0",
