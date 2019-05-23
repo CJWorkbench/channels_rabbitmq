@@ -28,6 +28,11 @@ def channel_to_queue_name(channel):
     return channel[: channel.index("!")]
 
 
+async def _close_transport_and_protocol(transport, protocol):
+    transport.close()  # may be spurious
+    await protocol.wait_closed()
+
+
 async def gather_without_leaking(tasks):
     """
     Run a bunch of tasks to completion, _then_ raise the first exception.
@@ -378,9 +383,13 @@ class Connection:
 
         # self._is_connected: means self._protocol and self._channel are
         # initialized and ready to use.
-        self._is_connected = False
+        #
+        # self.close() uses self._protocol and self._transport. Don't worry
+        # about them being stale: it's okay for self.close() to make spurious
+        # calls.
         self._protocol = None
         self._transport = None
+
         # self._connect_event: a transient variable that signals, "Something
         # happened."
         #
@@ -393,11 +402,15 @@ class Connection:
         # (useful in unit tests when we actually want to disconnect).
         self.worker = asyncio.ensure_future(self._connect_forever(), loop=loop)
 
-        # self.close() uses self._protocol and self._transport. Don't worry
-        # about them being stale: it's okay for self.close() to make spurious
-        # calls.
-        self._protocol = None
-        self._transport = None
+    @property
+    def _is_connected(self):
+        """
+        True iff self._transport and self._protocol are set.
+
+        They might be invalid; they might be in the process of disconnecting.
+        Races abound; but at least we know that we _think_ we're connected.
+        """
+        return self._transport is not None
 
     async def _connect_forever(self):
         """
@@ -406,7 +419,12 @@ class Connection:
         while not self._is_closed:
             try:
                 await self._connect_and_run()
-            except (AmqpClosedConnection, ConnectionError, OSError) as err:
+            except (
+                AmqpClosedConnection,
+                ChannelClosed,  # setup error: e.g., queue_declare conflict
+                ConnectionError,
+                OSError
+            ) as err:
                 if self._is_closed:
                     logger.debug("Connect/run on RabbitMQ failed: %r", err)
                     # these aren't errors when the caller said close(). Not
@@ -434,11 +452,68 @@ class Connection:
         # After we return, everyone waiting for `_connect_event` will wake up.
 
     async def _connect_and_run(self):
-        self._is_connected = False
-
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
         transport, protocol = await aioamqp.from_url(self.host, ssl=self.ssl_context)
+        try:
+            channel = await self._setup_channel_during_connect(protocol)
+            self._protocol = protocol
+            self._transport = transport
+            self._channel = channel
+            self._notify_connect_event()  # anyone waiting for us?
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            await _close_transport_and_protocol(transport, protocol)
+            raise
 
+        # and now run until eternity...
+        if not self._is_closed:
+            # What happens on error? One of two things:
+            #
+            # 1. RabbitMQ closes self._channel. Why would it do this? Well,
+            #    that's not for us to ask. The most common case is:
+            # 2. RabbitMQ closes self._protocol. If it does, self._protocol
+            #    will go and close self._channel.
+            # 3. Network error. self._protocol.worker will return in that
+            #    case.
+            #
+            # In cases 2 and 3, `self._protocol.run()` will raise
+            # AmqpClosedConnection, close connections, and bail. In case 1, we
+            # need to force the close ourselves.
+            logger.info("Monitoring for network interruptions")
+            await self._channel.close_event.wait()  # case 1, 2, 3
+
+        # case 1 only: if the channel was closed and the connection wasn't,
+        # wipe out the connection. (Otherwise, this is a no-op.)
+        #
+        # Clear self._transport and self._protocol, so
+        # self._is_connected = False.
+        logger.info("Disconnecting")
+        self._transport = None
+        self._protocol = None
+        await _close_transport_and_protocol(transport, protocol)
+
+        # await protocol.worker so that every Future that's been
+        # created gets awaited.
+        logger.debug("Cleaning up after disconnect")
+        await protocol.worker
+
+    async def _setup_channel_during_connect(self, protocol):
+        """
+        Create a new `channel` and ensure structures on RabbitMQ.
+
+        Upon return, we guarantee:
+
+        * The channel is set to "publisher confirms"
+        * GroupsExchange is declared
+        * A `self.group_name` exclusive queue is declared, with
+          `self.remote_capacity` and `self.prefetch_count` set.
+        * (If we're reconnecting) groups are bound on GroupsExchange.
+        * The channel is consuming with `self._handle_message`.
+
+        Can raise ChannelError, AmqpClosedConnection, and basically
+        any other error.
+        """
         logger.debug("Connected; setting up")
         channel = await protocol.channel()
 
@@ -467,17 +542,6 @@ class Connection:
             },
         )
         await channel.basic_qos(prefetch_count=self.prefetch_count)
-        # It's tempting to set no_ack=True, since this is an exclusive queue.
-        # But if we do that, how do we back-pressure? What happens when we
-        # receive too many messages -- do TCP buffers fill up and prevent other
-        # messages from moving through this channel? ... let's not investigate
-        # until speed or network traffic becomes an issue.
-        await channel.basic_consume(self._handle_message, self.queue_name)
-
-        self._is_connected = True
-        self._protocol = protocol
-        self._transport = transport
-        self._channel = channel
 
         # Re-bind groups (after reconnect)
         async with self._groups_lock:
@@ -492,37 +556,14 @@ class Connection:
                 ]
             )
 
-        self._notify_connect_event()  # anyone waiting for us?
+        # It's tempting to set no_ack=True, since this is an exclusive queue.
+        # But if we do that, how do we back-pressure? What happens when we
+        # receive too many messages -- do TCP buffers fill up and prevent other
+        # messages from moving through this channel? ... let's not investigate
+        # until speed or network traffic becomes an issue.
+        await channel.basic_consume(self._handle_message, self.queue_name)
 
-        # and now run until eternity...
-        if not self._is_closed:
-            # What happens on error? One of two things:
-            #
-            # 1. RabbitMQ closes self._channel. Why would it do this? Well,
-            #    that's not for us to ask. The most common case is:
-            # 2. RabbitMQ closes self._protocol. If it does, self._protocol
-            #    will go and close self._channel.
-            # 3. Network error. self._protocol.worker will return in that
-            #    case.
-            #
-            # In cases 2 and 3, `self._protocol.run()` will raise
-            # AmqpClosedConnection, close connections, and bail. In case 1, we
-            # need to force the close ourselves.
-            logger.info("Monitoring for network interruptions")
-            await self._channel.close_event.wait()  # case 1, 2, 3
-
-        logger.info("Disconnecting")
-
-        # case 1 only: if the channel was closed and the connection wasn't,
-        # wipe out the connection. (Otherwise, this is a no-op.)
-        await protocol.close()
-        transport.close()  # probably spurious
-
-        logger.debug("Cleaning up after disconnect")
-
-        # await protocol.worker so that every Future that's been
-        # created gets awaited.
-        await protocol.worker
+        return channel
 
     async def _handle_message(self, channel, body, envelope, properties):
         try:
@@ -681,14 +722,11 @@ class Connection:
     async def close(self):
         self._is_closed = True
 
-        # we're connected ... so disconnect!
-        if self._protocol:
-            try:
-                await self._protocol.close()  # may be spurious
-            except AmqpClosedConnection:
-                pass
-        if self._transport:
-            self._transport.close()  # may be spurious
+        if self._transport is not None:
+            await _close_transport_and_protocol(self._transport, self._protocol)
+            self._transport = None
+            self._protocol = None
+            self._channel = None
 
         # Wait for self._connect_forever() to exit. That'll mean all transient
         # variables (including self._protocol.worker) are cleaned up.

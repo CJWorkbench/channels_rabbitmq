@@ -1,12 +1,13 @@
 import asyncio
 import ssl
+import time
 from pathlib import Path
 
 import pytest
 from aioamqp.exceptions import ChannelClosed
 
 from channels.exceptions import ChannelFull
-from channels_rabbitmq.connection import Connection
+from channels_rabbitmq.connection import Connection, ReconnectDelay
 
 HOST = "amqp://guest:guest@localhost/"
 SSL_CONTEXT = ssl.create_default_context(
@@ -346,3 +347,46 @@ async def test_no_ssl(connect):
     Assumes the server is listening over both a TLS port and a no-TLS port.
     """
     connect("x", ssl_context=None)
+
+
+@ASYNC_TEST
+async def test_reconnect_on_queue_name_conflict(connect):
+    """
+    When reconnecting to a cluster, a race may leave your queue name declared.
+
+    `channels_rabbitmq` should try to reconnect when that happens. (We assume
+    there aren't two clients with the same queue_name; if they are, hopefully
+    one of them is reading the flurry of errors in the logs.)
+
+    https://github.com/CJWorkbench/channels_rabbitmq/issues/9
+    """
+    connection1 = connect("x")
+    # Ensure the connection is alive and kicking
+    await connection1.send("x!y", {"type": "test.1"})
+    assert (await connection1.receive("x!y"))["type"] == "test.1"
+
+    # Now simulate a race: here comes the same client, but the queue is already
+    # declared! Oh no!
+    connection2 = connect("x")
+
+    # (The old connection will die 0.2s after we try to declare the queue.)
+    async def close_slowly():
+        """
+        Close connection1, "slowly".
+
+        For 0.2s, connection1 will be open and conflicting with connection2,
+        preventing connection2 from connecting. After return, connection1 will
+        be closed. (If we're connected to a RabbitMQ cluster there may _still_
+        be a conflict even after return; but that shouldn't be a problem
+        because the reconnect will _eventually_ succeed.
+        """
+        await asyncio.sleep(0.2)
+        await connection1.close()
+
+    t1 = time.time()
+    future_closed = asyncio.create_task(close_slowly())
+    await connection2.send("x!y", {"type": "test.2"})
+    await future_closed  # clean up
+    t2 = time.time()
+    assert t2 - t1 >= ReconnectDelay, 'send() should stall until reconnect'
+    assert (await connection2.receive("x!y"))["type"] == "test.2"
