@@ -1,4 +1,10 @@
+v1.1.1 - 2019-05-23
+~~~~~~~~~~~~~~~~~~~
+
+* Retry after ``declare_queue`` errors during reconnect [issue #9]
+
 v1.1.0 - 2019-05-09
+~~~~~~~~~~~~~~~~~~~
 
 * Add ``ssl_context`` configuration option [issue #2]
 * Upgrade to aioamqp 0.13
