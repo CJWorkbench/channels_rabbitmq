@@ -388,5 +388,5 @@ async def test_reconnect_on_queue_name_conflict(connect):
     await connection2.send("x!y", {"type": "test.2"})
     await future_closed  # clean up
     t2 = time.time()
-    assert t2 - t1 >= ReconnectDelay, 'send() should stall until reconnect'
+    assert t2 - t1 >= ReconnectDelay, "send() should stall until reconnect"
     assert (await connection2.receive("x!y"))["type"] == "test.2"

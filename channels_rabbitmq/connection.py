@@ -423,7 +423,7 @@ class Connection:
                 AmqpClosedConnection,
                 ChannelClosed,  # setup error: e.g., queue_declare conflict
                 ConnectionError,
-                OSError
+                OSError,
             ) as err:
                 if self._is_closed:
                     logger.debug("Connect/run on RabbitMQ failed: %r", err)
