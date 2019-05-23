@@ -462,7 +462,9 @@ class Connection:
             self._notify_connect_event()  # anyone waiting for us?
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except Exception:
+            # Disconnect (because `transport` and `protocol` are going out of
+            # scope) and re-raise
             await _close_transport_and_protocol(transport, protocol)
             raise
 
