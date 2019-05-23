@@ -384,7 +384,7 @@ async def test_reconnect_on_queue_name_conflict(connect):
         await connection1.close()
 
     t1 = time.time()
-    future_closed = asyncio.create_task(close_slowly())
+    future_closed = asyncio.get_event_loop().create_task(close_slowly())
     await connection2.send("x!y", {"type": "test.2"})
     await future_closed  # clean up
     t2 = time.time()
