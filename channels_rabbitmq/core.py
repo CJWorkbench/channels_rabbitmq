@@ -135,6 +135,9 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         assert self.valid_channel_name(channel), "Channel name not valid"
         assert "__asgi_channel__" not in message
         assert "__asgi_group__" not in message
+        if '!' not in channel and channel == 'channels':
+            connection = self._get_connection_for_loop()
+            channel = '!'.join([connection.queue_name,'channels'])
         assert "!" in channel
 
         connection = self._get_connection_for_loop()
@@ -150,6 +153,9 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         # Make sure the channel name is valid then get the non-local part
         # and thus its index
         assert self.valid_channel_name(channel)
+        if '!' not in channel and channel == 'channels':
+            connection = self._get_connection_for_loop()
+            channel = '!'.join([connection.queue_name,'channels'])
         assert "!" in channel
 
         connection = self._get_connection_for_loop()
