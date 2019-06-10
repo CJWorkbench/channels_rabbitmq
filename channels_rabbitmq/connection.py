@@ -13,10 +13,6 @@ from channels.exceptions import ChannelFull
 logger = logging.getLogger(__name__)
 
 
-GroupsExchange = "groups"
-ReconnectDelay = 1.0  # seconds
-
-
 def serialize(body):
     """
     Serializes message to a byte string.
@@ -341,6 +337,8 @@ class Connection:
         expiry=60,
         group_expiry=86400,
         ssl_context=None,
+        groups_exchange="groups",
+        reconnect_delay=1.0,
     ):
         self.loop = loop
         self.host = host
@@ -351,6 +349,8 @@ class Connection:
         self.group_expiry = group_expiry
         self.queue_name = queue_name
         self.ssl_context = ssl_context
+        self.groups_exchange = groups_exchange
+        self.reconnect_delay = reconnect_delay
 
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
@@ -434,9 +434,9 @@ class Connection:
                 logger.warning(
                     "Connect/run on RabbitMQ failed: %r; will retry in %fs",
                     err,
-                    ReconnectDelay,
+                    self.reconnect_delay,
                 )
-                await asyncio.sleep(ReconnectDelay)
+                await asyncio.sleep(self.reconnect_delay)
             except Exception:
                 logger.exception("Unhandled exception from aioamqp")
                 raise  # and crash
@@ -507,10 +507,10 @@ class Connection:
         Upon return, we guarantee:
 
         * The channel is set to "publisher confirms"
-        * GroupsExchange is declared
+        * self.groups_exchange is declared
         * A `self.group_name` exclusive queue is declared, with
           `self.remote_capacity` and `self.prefetch_count` set.
-        * (If we're reconnecting) groups are bound on GroupsExchange.
+        * (If we're reconnecting) groups are bound on self.groups_exchange.
         * The channel is consuming with `self._handle_message`.
 
         Can raise ChannelError, AmqpClosedConnection, and basically
@@ -525,7 +525,7 @@ class Connection:
 
         # Declare "groups" exchange. It may persist; spurious declarations
         # (such as on reconnect) are harmless.
-        await channel.exchange_declare(GroupsExchange, "direct")
+        await channel.exchange_declare(self.groups_exchange, "direct")
 
         # Queue up the handling of messages.
         #
@@ -552,7 +552,7 @@ class Connection:
             await gather_without_leaking(
                 [
                     channel.queue_bind(
-                        self.queue_name, GroupsExchange, routing_key=group
+                        self.queue_name, self.groups_exchange, routing_key=group
                     )
                     for group in groups
                 ]
@@ -681,7 +681,7 @@ class Connection:
                 # This group is new to our connection-level queue. Make a
                 # connection-level binding.
                 await channel.queue_bind(
-                    self.queue_name, GroupsExchange, routing_key=group
+                    self.queue_name, self.groups_exchange, routing_key=group
                 )
 
     async def group_discard(self, group, asgi_channel):
@@ -703,7 +703,7 @@ class Connection:
                 logger.debug("Unbinding queue %s from group %s", self.queue_name, group)
                 # Disconnect, if we're connected.
                 await self._channel.queue_unbind(
-                    self.queue_name, GroupsExchange, routing_key=group
+                    self.queue_name, self.groups_exchange, routing_key=group
                 )
 
     @stall_until_connected_or_closed
@@ -714,7 +714,7 @@ class Connection:
         logger.debug("group_send %r to %s", message, group)
 
         try:
-            await channel.publish(message, GroupsExchange, routing_key=group)
+            await channel.publish(message, self.groups_exchange, routing_key=group)
         except PublishFailed:
             # The Channels protocol has no way of reporting this error.
             # Just silently delete the message.

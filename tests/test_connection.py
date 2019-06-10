@@ -7,7 +7,7 @@ import pytest
 from aioamqp.exceptions import ChannelClosed
 
 from channels.exceptions import ChannelFull
-from channels_rabbitmq.connection import Connection, ReconnectDelay
+from channels_rabbitmq.connection import Connection
 
 HOST = "amqp://guest:guest@localhost/"
 SSL_CONTEXT = ssl.create_default_context(
@@ -207,6 +207,36 @@ async def test_groups_remote(connect):
 
 
 @ASYNC_TEST
+async def test_groups_exchange(connect):
+    """
+    Tests customizable groups exchange.
+    """
+    connection1 = connect("x", groups_exchange="test-groups-exchange")
+    connection2 = connect("y", groups_exchange="test-groups-exchange")
+    connection3 = connect("z")
+
+    await connection1.group_add("test-group", "x!1")
+    await connection1.group_add("test-group", "x!2")
+    await connection2.group_add("test-group", "y!3")
+    await connection3.group_add("test-group", "z!4")
+    await connection1.group_discard("test-group", "x!2")
+    await connection2.group_send("test-group", {"type": "message.1"})
+
+    # Make sure we get the message on the two channels that were in
+    assert (await connection1.receive("x!1"))["type"] == "message.1"
+    assert (await connection2.receive("y!3"))["type"] == "message.1"
+
+    # "x!2" is unsubscribed. It should receive _other_ messages, though.
+    await connection2.send("x!2", {"type": "message.2"})
+    assert (await connection1.receive("x!2"))["type"] == "message.2"
+
+    # "z!4" is in separate (default) exchange 'groups'.
+    # It should receive _other_ messages, though.
+    await connection3.group_send("test-group", {"type": "message.4"})
+    assert (await connection3.receive("z!4"))["type"] == "message.4"
+
+
+@ASYNC_TEST
 async def test_groups_channel_full(connect):
     """
     Tests that group_send ignores ChannelFull
@@ -360,14 +390,15 @@ async def test_reconnect_on_queue_name_conflict(connect):
 
     https://github.com/CJWorkbench/channels_rabbitmq/issues/9
     """
-    connection1 = connect("x")
+    CUSTOM_RECONNECT_DELAY = 3.0
+    connection1 = connect("x", reconnect_delay=CUSTOM_RECONNECT_DELAY)
     # Ensure the connection is alive and kicking
     await connection1.send("x!y", {"type": "test.1"})
     assert (await connection1.receive("x!y"))["type"] == "test.1"
 
     # Now simulate a race: here comes the same client, but the queue is already
     # declared! Oh no!
-    connection2 = connect("x")
+    connection2 = connect("x", reconnect_delay=CUSTOM_RECONNECT_DELAY)
 
     # (The old connection will die 0.2s after we try to declare the queue.)
     async def close_slowly():
@@ -388,5 +419,5 @@ async def test_reconnect_on_queue_name_conflict(connect):
     await connection2.send("x!y", {"type": "test.2"})
     await future_closed  # clean up
     t2 = time.time()
-    assert t2 - t1 >= ReconnectDelay, "send() should stall until reconnect"
+    assert t2 - t1 >= CUSTOM_RECONNECT_DELAY, "send() should stall until reconnect"
     assert (await connection2.receive("x!y"))["type"] == "test.2"
