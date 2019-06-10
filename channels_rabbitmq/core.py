@@ -52,7 +52,6 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         group_expiry=86400,
         ssl_context=None,
         groups_exchange="groups",
-        reconnect_delay=1.0,
     ):
         self.host = host
         self.local_capacity = local_capacity
@@ -62,7 +61,6 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         self.group_expiry = 86400
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
-        self.reconnect_delay = reconnect_delay
 
         # In inefficient client code (e.g., async_to_sync()), there may be
         # several send() or receive() calls within different event loops --
@@ -96,7 +94,6 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             group_expiry=self.group_expiry,
             ssl_context=self.ssl_context,
             groups_exchange=self.groups_exchange,
-            reconnect_delay=self.reconnect_delay,
         )
         self._connections[loop] = connection  # assume lock is held
 

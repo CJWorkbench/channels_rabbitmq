@@ -13,6 +13,9 @@ from channels.exceptions import ChannelFull
 logger = logging.getLogger(__name__)
 
 
+ReconnectDelay = 1.0  # seconds
+
+
 def serialize(body):
     """
     Serializes message to a byte string.
@@ -338,7 +341,6 @@ class Connection:
         group_expiry=86400,
         ssl_context=None,
         groups_exchange="groups",
-        reconnect_delay=1.0,
     ):
         self.loop = loop
         self.host = host
@@ -350,7 +352,6 @@ class Connection:
         self.queue_name = queue_name
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
-        self.reconnect_delay = reconnect_delay
 
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
@@ -434,9 +435,9 @@ class Connection:
                 logger.warning(
                     "Connect/run on RabbitMQ failed: %r; will retry in %fs",
                     err,
-                    self.reconnect_delay,
+                    ReconnectDelay,
                 )
-                await asyncio.sleep(self.reconnect_delay)
+                await asyncio.sleep(ReconnectDelay)
             except Exception:
                 logger.exception("Unhandled exception from aioamqp")
                 raise  # and crash

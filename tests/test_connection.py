@@ -7,7 +7,7 @@ import pytest
 from aioamqp.exceptions import ChannelClosed
 
 from channels.exceptions import ChannelFull
-from channels_rabbitmq.connection import Connection
+from channels_rabbitmq.connection import Connection, ReconnectDelay
 
 HOST = "amqp://guest:guest@localhost/"
 SSL_CONTEXT = ssl.create_default_context(
@@ -390,15 +390,14 @@ async def test_reconnect_on_queue_name_conflict(connect):
 
     https://github.com/CJWorkbench/channels_rabbitmq/issues/9
     """
-    CUSTOM_RECONNECT_DELAY = 3.0
-    connection1 = connect("x", reconnect_delay=CUSTOM_RECONNECT_DELAY)
+    connection1 = connect("x")
     # Ensure the connection is alive and kicking
     await connection1.send("x!y", {"type": "test.1"})
     assert (await connection1.receive("x!y"))["type"] == "test.1"
 
     # Now simulate a race: here comes the same client, but the queue is already
     # declared! Oh no!
-    connection2 = connect("x", reconnect_delay=CUSTOM_RECONNECT_DELAY)
+    connection2 = connect("x")
 
     # (The old connection will die 0.2s after we try to declare the queue.)
     async def close_slowly():
@@ -419,5 +418,5 @@ async def test_reconnect_on_queue_name_conflict(connect):
     await connection2.send("x!y", {"type": "test.2"})
     await future_closed  # clean up
     t2 = time.time()
-    assert t2 - t1 >= CUSTOM_RECONNECT_DELAY, "send() should stall until reconnect"
+    assert t2 - t1 >= ReconnectDelay, "send() should stall until reconnect"
     assert (await connection2.receive("x!y"))["type"] == "test.2"

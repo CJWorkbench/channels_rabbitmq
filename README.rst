@@ -106,11 +106,6 @@ are transmitted in cleartext.
 Global direct exchange name used by channels to exchange group messages.
 Defaults to ``"groups"``. See also `Design decisions`_.
 
-``reconnect_delay``
-~~~~~~~~~~~~~~~~~~~
-
-Reconnect delay after failure disconnect. Defaults to ``1.0``.
-
 Design decisions
 ----------------
 
