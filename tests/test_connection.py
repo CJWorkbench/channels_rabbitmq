@@ -207,6 +207,36 @@ async def test_groups_remote(connect):
 
 
 @ASYNC_TEST
+async def test_groups_exchange(connect):
+    """
+    Tests customizable groups exchange.
+    """
+    connection1 = connect("x", groups_exchange="test-groups-exchange")
+    connection2 = connect("y", groups_exchange="test-groups-exchange")
+    connection3 = connect("z")
+
+    await connection1.group_add("test-group", "x!1")
+    await connection1.group_add("test-group", "x!2")
+    await connection2.group_add("test-group", "y!3")
+    await connection3.group_add("test-group", "z!4")
+    await connection1.group_discard("test-group", "x!2")
+    await connection2.group_send("test-group", {"type": "message.1"})
+
+    # Make sure we get the message on the two channels that were in
+    assert (await connection1.receive("x!1"))["type"] == "message.1"
+    assert (await connection2.receive("y!3"))["type"] == "message.1"
+
+    # "x!2" is unsubscribed. It should receive _other_ messages, though.
+    await connection2.send("x!2", {"type": "message.2"})
+    assert (await connection1.receive("x!2"))["type"] == "message.2"
+
+    # "z!4" is in separate (default) exchange 'groups'.
+    # It should receive _other_ messages, though.
+    await connection3.group_send("test-group", {"type": "message.4"})
+    assert (await connection3.receive("z!4"))["type"] == "message.4"
+
+
+@ASYNC_TEST
 async def test_groups_channel_full(connect):
     """
     Tests that group_send ignores ChannelFull

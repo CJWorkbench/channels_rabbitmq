@@ -120,6 +120,30 @@ async def test_groups_within_layer():
     assert (await layer.receive(channel2))["type"] == "message.2"
 
 
+@pytest.mark.asyncio
+async def test_groups_exchange():
+    """
+    Tests custom group exchange.
+    """
+    layer = RabbitmqChannelLayer(host=HOST)
+    layer2 = RabbitmqChannelLayer(host=HOST, groups_exchange="test-groups-exchange")
+    channel1 = await layer.new_channel()
+    channel2 = await layer2.new_channel()
+    channel3 = await layer.new_channel()
+    await layer.group_add("test-group", channel1)
+    await layer2.group_add("test-group", channel2)
+    await layer.group_add("test-group", channel3)
+    await layer.group_send("test-group", {"type": "message.1"})
+
+    # Make sure we get the message on the two channels that were in
+    assert (await layer.receive(channel1))["type"] == "message.1"
+    assert (await layer.receive(channel3))["type"] == "message.1"
+
+    # channel2 is in separate exchange. It should receive _other_ messages, though.
+    await layer.send(channel2, {"type": "message.2"})
+    assert (await layer2.receive(channel2))["type"] == "message.2"
+
+
 def test_async_to_sync_from_thread():
     def run():
         layer = RabbitmqChannelLayer(host=HOST)

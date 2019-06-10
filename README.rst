@@ -100,6 +100,12 @@ client::
 By default, there is no SSL context; all messages (and passwords) are
 are transmitted in cleartext.
 
+``groups_exchange``
+~~~~~~~~~~~~~~~~~~~
+
+Global direct exchange name used by channels to exchange group messages.
+Defaults to ``"groups"``. See also `Design decisions`_.
+
 Design decisions
 ----------------
 
@@ -109,10 +115,10 @@ websocket connections are open. For each message being sent, the client-side
 layer determines the RabbitMQ queue name and uses it as the routing key.
 
 Groups are implemented using a single, global RabbitMQ direct exchange called
-"groups". To send a message to a group, the layer sends the message to the
+"groups" by default. To send a message to a group, the layer sends the message to the
 "groups" exchange with the group name as the routing key. The client binds and
 unbinds during ``group_add()`` and ``group_remove()`` to ensure messages for
-any of its groups will reach it.
+any of its groups will reach it. See also the `groups_exchange`_ option.
 
 RabbitMQ queues are ``exclusive``: when a client disconnects (through close or
 crash), RabbitMQ will delete the queue and unbind the groups.
