@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 ReconnectDelay = 1.0  # seconds
+BackpressureWarningInterval = 5.0  # seconds
 
 
 def serialize(body):
@@ -121,6 +122,7 @@ class MultiQueue:
         self._out = defaultdict(lambda: MultiQueue.OutQueue(self))
         self._putters = deque()
         self._is_closed = False
+        self._last_logged_backpressure = 0  # time.time() result
 
     def full(self):
         return self.n >= self.capacity
@@ -129,9 +131,37 @@ class MultiQueue:
         if self._is_closed:
             return
 
+        logged_backpressure = False  # for this message (too fine-grained?)
+
         while self.full():
             putter = self.loop.create_future()
             self._putters.append(putter)
+
+            now = time.time()
+            if now - self._last_logged_backpressure > BackpressureWarningInterval:
+                # Back-pressure is by design: the user configured it.
+                # 
+                # However, back-pressure on a well-oiled website often means
+                # something's wrong -- for example, a cancelled Websocket
+                # client erroneously still added to a group; or a user with a
+                # slow web browser only consuming one message every 5s. You
+                # can't rely on a ChannelFull exception appearing:
+                # back-pressure can convince your users the site is broken, so
+                # they'll go away.
+                #
+                # Should this be _info_ (because it's a normal event) or
+                # _warning_? Warning seems appropriate because this means
+                # disaster on a Websockets website.
+                blockers = [
+                    (name, len(q._queue)) for name, q in self._out.items()
+                ]
+                blockers.sort(key=lambda b: b[1], reverse=True)
+                big_queues_str = ', '.join(
+                    f'{name} ({count})' for name, count in blockers[:3]
+                )
+                logger.warning('Back-pressuring. Biggest queues: %s',
+                               big_queues_str)
+                self._last_logged_backpressure = now
 
             try:
                 await putter  # raises ChannelClosed

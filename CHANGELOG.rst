@@ -1,3 +1,9 @@
+v?.?.? - ????-??-??
+~~~~~~~~~~~~~~~~~~~
+
+* Warn when back-pressuring. Back-pressuring can make a web server
+  unresponsive, even though it's behaving according to spec.
+
 v1.1.2 - 2019-06-10
 ~~~~~~~~~~~~~~~~~~~
 

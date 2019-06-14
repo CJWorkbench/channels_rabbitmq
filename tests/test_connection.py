@@ -47,7 +47,7 @@ async def connect():
 
 
 @ASYNC_TEST
-async def test_send_capacity(connect):
+async def test_send_capacity(connect, caplog):
     """
     Makes sure we get ChannelFull when our in-memory structure runs out of
     memory.
@@ -58,6 +58,7 @@ async def test_send_capacity(connect):
     await connection.send("x!y", {"type": "test.message3"})  # one ready
     with pytest.raises(ChannelFull):
         await connection.send("x!y", {"type": "test.message4"})
+    assert "Back-pressuring. Biggest queues: x!y (1)" in caplog.text
 
     # Test that even after error, the queue works as expected.
 
