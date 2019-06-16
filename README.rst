@@ -37,10 +37,12 @@ reachable in case of a disconnection.
 ``expiry``
 ~~~~~~~~~~
 
-Message expiry in seconds. Defaults to ``60``. You generally shouldn't need
-to change this, but you may want to turn it down if you have peaky traffic you
-wish to drop, or up if you have peaky traffic you want to backlog until you
-get to it.
+Minimum number of seconds a message should wait in a RabbitMQ queue, before it
+may be silently dropped.
+
+Defaults to ``60``. You generally shouldn't need to change this, but you may
+want to turn it down if you have peaky traffic you wish to drop, or up if you
+have peaky traffic you want to backlog until you get to it.
 
 ``group_expiry``
 ~~~~~~~~~~~~~~~~
@@ -57,6 +59,19 @@ disappear from RabbitMQ immediately: you needn't worry about leaks.)
 Number of messages queued in memory. Defaults to ``100``. (A message sent to
 a group with two channels counts as two messages.) When ``local_capacity``
 messages are queued, the message backlog will grow on RabbitMQ.
+
+``local_expiry``
+~~~~~~~~~~~~~~~~
+
+Minimum number of seconds a message received from RabbitMQ must be held in
+memory waiting for ``receive()``, before it may be dropped. Defaults to
+``expiry``.
+
+A warning will be logged when a message expires locally. The warning can
+indicate that a channel has more messages than it can handle; or that
+messages are being sent to a channel that does not exist. (Perhaps a missing
+channel was implied by ``group_add()``, and a matching ``group_discard()``
+was never called.)
 
 ``remote_capacity``
 ~~~~~~~~~~~~~~~~~~~

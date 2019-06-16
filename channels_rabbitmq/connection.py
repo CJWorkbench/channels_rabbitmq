@@ -3,6 +3,7 @@ import functools
 import logging
 import time
 from collections import defaultdict, deque
+from typing import Optional
 
 import aioamqp
 import msgpack
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 ReconnectDelay = 1.0  # seconds
 BackpressureWarningInterval = 5.0  # seconds
+ExpiryWarningInterval = 5.0  # seconds
 
 
 def serialize(body):
@@ -92,8 +94,28 @@ class MultiQueue:
             self._getters = deque()
             self._queue = deque()
 
-        def put(self, item):
-            self._queue.append(item)
+        def put(self, item, expires: float) -> None:
+            self._queue.append((item, expires))
+
+        def drop_all_expired(self, now: float) -> None:
+            """
+            Drop expired messages.
+
+            This is only called by put_channel(); so we never need to call
+            self.parent.wakeup_putter() because we know put_channel() is not
+            sleeping.
+            """
+            while self._queue and self._queue[0][1] < now:
+                self.parent._log_local_expiry_debounced(now)
+                self._queue.popleft()
+                self.parent.n -= 1
+
+        @property
+        def soonest_expiry(self) -> Optional[float]:
+            if self._queue:
+                return self._queue[0][1]
+            else:
+                return None
 
         async def get(self):
             while not self._queue:
@@ -107,93 +129,153 @@ class MultiQueue:
                     self._getters.remove(getter)
                     raise
 
-            item = self._queue.popleft()
+            item = self._queue.popleft()[0]
             self.parent.n -= 1
-            _wakeup_next(self.parent._putters)
+            self.parent._putter_wakeup.set()
 
             return item
 
-    def __init__(self, loop, capacity):
+    def __init__(self, loop, capacity, local_expiry, group_expiry):
         self.loop = loop
         self.capacity = capacity
+        self.local_expiry = local_expiry
+        self.group_expiry = group_expiry
         self.n = 0
 
-        self.local_groups = defaultdict(dict)  # group => {channel => expiry}
+        self.local_groups = defaultdict(dict)  # group => {channel => expire}
         self._out = defaultdict(lambda: MultiQueue.OutQueue(self))
-        self._putters = deque()
-        self._is_closed = False
+        self._closed = asyncio.Event(loop=loop)
+        self._putter_wakeup = asyncio.Event(loop=loop)
+        self._putter_semaphore = asyncio.BoundedSemaphore(self.capacity)
         self._last_logged_backpressure = 0  # time.time() result
+        self._last_logged_expiry = 0  # time.time() result
 
     def full(self):
         return self.n >= self.capacity
 
+    def _drop_all_expired(self, now: float):
+        to_delete = []
+        for asgi_channel, queue in self._out.items():
+            queue.drop_all_expired(now)
+            if not queue._queue and not queue._getters:
+                to_delete.append(asgi_channel)
+        for asgi_channel in to_delete:
+            del self._out[asgi_channel]
+
+    def _soonest_expiry(self) -> float:
+        # Assumes there is at least one message queued somewhere.
+        return min(
+            [
+                queue.soonest_expiry
+                for queue in self._out.values()
+                if queue.soonest_expiry
+            ]
+        )
+
     async def put_channel(self, asgi_channel, message):
-        if self._is_closed:
-            return
+        """
+        Wait for `local_capacity`; then put to a queue and notify.
 
-        logged_backpressure = False  # for this message (too fine-grained?)
-
-        while self.full():
-            putter = self.loop.create_future()
-            self._putters.append(putter)
-
+        self.put_channel() is not re-entrant. Do not call this at the same time
+        as any other `put_group()` or `put_channel()`.
+        """
+        while self.full() and not self._closed.is_set():
             now = time.time()
-            if now - self._last_logged_backpressure > BackpressureWarningInterval:
-                # Back-pressure is by design: the user configured it.
-                # 
-                # However, back-pressure on a well-oiled website often means
-                # something's wrong -- for example, a cancelled Websocket
-                # client erroneously still added to a group; or a user with a
-                # slow web browser only consuming one message every 5s. You
-                # can't rely on a ChannelFull exception appearing:
-                # back-pressure can convince your users the site is broken, so
-                # they'll go away.
-                #
-                # Should this be _info_ (because it's a normal event) or
-                # _warning_? Warning seems appropriate because this means
-                # disaster on a Websockets website.
-                blockers = [
-                    (name, len(q._queue)) for name, q in self._out.items()
-                ]
-                blockers.sort(key=lambda b: b[1], reverse=True)
-                big_queues_str = ', '.join(
-                    f'{name} ({count})' for name, count in blockers[:3]
-                )
-                logger.warning('Back-pressuring. Biggest queues: %s',
-                               big_queues_str)
-                self._last_logged_backpressure = now
+            self._drop_all_expired(now)
+            if not self.full():
+                break
+            self._log_backpressure_debounced(now)
+
+            # Wait for any getter to notify us, via self._putter_wakeup().
+            timeout = self._soonest_expiry() - now
 
             try:
-                await putter  # raises ChannelClosed
-                # trust _wakeup_next and close() to clear self._putters
-            except ChannelClosed:
-                # Drop the message. We're closed.
-                return
-            except asyncio.CancelledError:
-                self._putters.remove(putter)
-                raise
+                self._putter_wakeup.clear()
+                # Wait until the first of:
+                # * self._out[*].get()
+                # * self.close()
+                # * message expiry (via timeout)
+                await asyncio.wait_for(self._putter_wakeup.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass  # loop; we'll drop more messages
+
+        if self._closed.is_set():
+            return
+
+        now = time.time()
+        expires = now + self.local_expiry
 
         self.n += 1
         # may create self._out[asgi_channel]
-        self._out[asgi_channel].put(message)
+        self._out[asgi_channel].put(message, expires)
         _wakeup_next(self._out[asgi_channel]._getters)
 
+    def _build_big_queues_str(self) -> str:
+        blockers = [(name, len(q._queue)) for name, q in self._out.items()]
+        blockers.sort(key=lambda b: b[1], reverse=True)
+        return ", ".join(f"{name} ({count})" for name, count in blockers[:3])
+
+    def _log_backpressure_debounced(self, now: float) -> None:
+        """
+        Log back-pressure if we haven't logged it in a while.
+
+        Back-pressure is by design: the user configured it.
+
+        However, back-pressure on a well-oiled website often means something's
+        wrong -- for example, a cancelled Websocket client erroneously still
+        added to a group; or a user with a slow web browser only consuming one
+        message every 5s. You can't rely on a ChannelFull exception appearing:
+        back-pressure can convince your users the site is broken, so they'll go
+        away.
+
+        Should this be _info_ (because it's a normal event) or _warning_?
+        Warning seems appropriate because back-pressure can mean disaster on a
+        production website.
+        """
+        if now - self._last_logged_backpressure > BackpressureWarningInterval:
+            logger.warning(
+                "Back-pressuring. Biggest queues: %s", self._build_big_queues_str()
+            )
+            self._last_logged_backpressure = now
+
+    def _log_local_expiry_debounced(self, now: float) -> None:
+        """
+        Log dropped messages.
+
+        Expiry is by design: the user configured it. But it's usually not
+        intended.
+
+        Should this be _info_ (because it's a normal event) or _warning_?
+        Warning seems appropriate because expiry usually means there's a
+        problem the dev should fix.
+        """
+        if now - self._last_logged_expiry > ExpiryWarningInterval:
+            logger.warning(
+                "A message (or messages) expired locally. Biggest queues: %s",
+                self._build_big_queues_str(),
+            )
+            self._last_logged_expiry = now
+
     async def put_group(self, group, message):
-        if self._is_closed:
+        """
+        Call self.put_channel() for all channels in `group`.
+
+        self.put_channel() is not re-entrant. Do not call this at the same time
+        as any other `put_group()` or `put_channel()`.
+        """
+        if self._closed.is_set():
             return
 
         if group not in self.local_groups:
             return  # don't create group
 
-        await gather_without_leaking(
-            [
-                self.put_channel(asgi_channel, message)
-                for asgi_channel in self.local_groups[group]
-            ]
-        )
+        # Put in serial: a parallel put_channel() is harder to write and
+        # there's no need for it.
+        for asgi_channel in self.local_groups[group]:
+            await self.put_channel(asgi_channel, message)
 
     async def get(self, asgi_channel):
-        if self._is_closed:
+        if self._closed.is_set():
             raise ChannelClosed
 
         try:
@@ -207,12 +289,12 @@ class MultiQueue:
                 del self._out[asgi_channel]
         return item
 
-    def group_add(self, group, asgi_channel, group_expiry=86400):
-        if self._is_closed:
+    def group_add(self, group, asgi_channel):
+        if self._closed.is_set():
             return None
 
         channels = self.local_groups[group]  # may create set
-        channels[asgi_channel] = time.time() + group_expiry
+        channels[asgi_channel] = time.time() + self.group_expiry
         return len(channels)
 
     def group_discard(self, group, asgi_channel):
@@ -221,7 +303,7 @@ class MultiQueue:
 
         Return None if the asgi_channel is not in the group.
         """
-        if self._is_closed:
+        if self._closed.is_set():
             return None
 
         if group not in self.local_groups:
@@ -254,16 +336,10 @@ class MultiQueue:
         """
         Nullify pending puts; raise ChannelClosed on pending gets.
         """
-        if self._is_closed:
+        if self._closed.is_set():
             return
-
-        self._is_closed = True
-
-        # Cancel all puts
-        for waiter in self._putters:
-            if not waiter.done():
-                waiter.set_exception(ChannelClosed)
-        self._putters.clear()
+        self._closed.set()
+        self._putter_wakeup.set()  # if it's waiting
 
         # Cancel all gets
         for out_queue in self._out.values():
@@ -368,16 +444,20 @@ class Connection:
         remote_capacity=100,
         prefetch_count=10,
         expiry=60,
+        local_expiry=None,
         group_expiry=86400,
         ssl_context=None,
         groups_exchange="groups",
     ):
+        if local_expiry is None:
+            local_expiry = expiry
         self.loop = loop
         self.host = host
         self.local_capacity = local_capacity
         self.remote_capacity = remote_capacity
         self.prefetch_count = prefetch_count
         self.expiry = expiry
+        self.local_expiry = local_expiry
         self.group_expiry = group_expiry
         self.queue_name = queue_name
         self.ssl_context = ssl_context
@@ -386,7 +466,9 @@ class Connection:
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
         # the caller is going away: we'll delete the queue in that case.
-        self._incoming_messages = MultiQueue(loop, local_capacity)
+        self._incoming_messages = MultiQueue(
+            loop, local_capacity, local_expiry, group_expiry
+        )
 
         # pending_puts: a "purgatory" for messages as we put them into
         # incoming_messages.
@@ -704,9 +786,7 @@ class Connection:
         ), "This layer won't let you add a channel from another connection"
 
         async with self._groups_lock:
-            n_bindings = self._incoming_messages.group_add(
-                group, asgi_channel, self.group_expiry
-            )
+            n_bindings = self._incoming_messages.group_add(group, asgi_channel)
             if n_bindings == 1:
                 logger.debug("Binding queue %s to group %s", self.queue_name, group)
                 # This group is new to our connection-level queue. Make a

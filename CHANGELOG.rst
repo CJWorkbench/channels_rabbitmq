@@ -1,8 +1,11 @@
-v?.?.? - ????-??-??
+v1.1.3 - 2019-06-16
 ~~~~~~~~~~~~~~~~~~~
 
 * Warn when back-pressuring. Back-pressuring can make a web server
   unresponsive, even though it's behaving according to spec.
+* Expire messages after receiving them from RabbitMQ but before
+  ``receive()``. Warn when expiring. Allows recovery after messages
+  are sent to nonexistent channels.
 
 v1.1.2 - 2019-06-10
 ~~~~~~~~~~~~~~~~~~~

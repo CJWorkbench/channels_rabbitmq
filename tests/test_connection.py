@@ -80,6 +80,39 @@ async def test_send_capacity(connect, caplog):
 
 
 @ASYNC_TEST
+async def test_send_expire_remotely(connect):
+    # expiry 80ms: long enough for us to receive all messages; short enough to
+    # keep the test fast.
+    connection = connect(
+        "x", local_capacity=1, prefetch_count=1, expiry=0.08, local_expiry=2
+    )
+    await connection.send("x!y", {"type": "test.message1"})  # queued+acked
+    await connection.send("x!y", {"type": "test.message2"})  # unacked
+    await connection.send("x!y", {"type": "test.message3"})  # remote
+    await asyncio.sleep(0.09)  # test.message3 should expire
+    await connection.send("x!y", {"type": "test.message4"})  # remote
+    assert (await connection.receive("x!y"))["type"] == "test.message1"
+    assert (await connection.receive("x!y"))["type"] == "test.message2"
+    # test.message3 should disappear entirely
+    assert (await connection.receive("x!y"))["type"] == "test.message4"
+
+
+@ASYNC_TEST
+async def test_send_expire_locally(connect, caplog):
+    # expiry 20ms: long enough that we can deliver one message but expire
+    # another.
+    connection = connect("x", local_capacity=1, prefetch_count=1, local_expiry=0.02)
+    await connection.send("x!y", {"type": "test.message1"})
+    await asyncio.sleep(0.2)  # plenty of time; messages should expire
+    # [2019-06-16] we currently only check for expiry when we receive a
+    # message and local_capacity is full.
+    await connection.send("x!y", {"type": "test.message2"})
+    await asyncio.sleep(0.01)
+    assert (await connection.receive("x!y"))["type"] == "test.message2"
+    assert "expired locally" in caplog.text
+
+
+@ASYNC_TEST
 async def test_process_local_send_receive(connect):
     """
     Makes sure we can send a message to a process-local channel then receive it.

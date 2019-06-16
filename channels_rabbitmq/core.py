@@ -49,6 +49,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         remote_capacity=100,
         prefetch_count=10,
         expiry=60,
+        local_expiry=None,
         group_expiry=86400,
         ssl_context=None,
         groups_exchange="groups",
@@ -58,6 +59,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         self.remote_capacity = remote_capacity
         self.prefetch_count = prefetch_count
         self.expiry = expiry
+        self.local_expiry = local_expiry
         self.group_expiry = 86400
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
@@ -91,6 +93,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             remote_capacity=self.remote_capacity,
             prefetch_count=self.prefetch_count,
             expiry=self.expiry,
+            local_expiry=self.local_expiry,
             group_expiry=self.group_expiry,
             ssl_context=self.ssl_context,
             groups_exchange=self.groups_exchange,
