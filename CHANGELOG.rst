@@ -1,3 +1,8 @@
+v1.1.4 - 2019-07-09
+~~~~~~~~~~~~~~~~~~~
+
+* Avoid race which could drop messages and hang publish(). [issue #14]
+
 v1.1.3 - 2019-06-16
 ~~~~~~~~~~~~~~~~~~~
 
