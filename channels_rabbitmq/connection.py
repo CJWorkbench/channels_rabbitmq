@@ -492,6 +492,11 @@ class Connection:
         # Lock used to add/remove from groups atomically
         self._groups_lock = asyncio.Lock()
 
+        # Lock used during send: we only send one message at a time. (An
+        # alternative approach would be to use a pool of channels for
+        # sending. It's not clear what that would win us.)
+        self._publish_lock = asyncio.Lock()
+
         self._is_closed = False
 
         # self._is_connected: means self._protocol and self._channel are
@@ -748,17 +753,18 @@ class Connection:
 
             connection.send({'foo': 'bar'})
         """
-        message["__asgi_channel__"] = asgi_channel
+        message = {**message, "__asgi_channel__": asgi_channel}
         message = msgpack.packb(message, use_bin_type=True)
 
         queue_name = channel_to_queue_name(asgi_channel)
+        logger.debug("publish %r on %s", message, queue_name)
 
         # Publish with publisher_confirms=True. Assume the server is configured
         # with `overflow: reject-publish`, so we get a basic.nack if the queue
         # length is exceeded.
         try:
-            logger.debug("publish %r on %s", message, queue_name)
-            await channel.publish(message, "", queue_name)
+            async with self._publish_lock:
+                await channel.publish(message, "", queue_name)
         except PublishFailed:
             raise ChannelFull()
         logger.debug("ok")
@@ -819,13 +825,14 @@ class Connection:
 
     @stall_until_connected_or_closed
     async def group_send(self, channel, group, message):
-        message["__asgi_group__"] = group
+        message = {**message, "__asgi_group__": group}
         message = msgpack.packb(message, use_bin_type=True)
 
         logger.debug("group_send %r to %s", message, group)
 
         try:
-            await channel.publish(message, self.groups_exchange, routing_key=group)
+            async with self._publish_lock:
+                await channel.publish(message, self.groups_exchange, routing_key=group)
         except PublishFailed:
             # The Channels protocol has no way of reporting this error.
             # Just silently delete the message.

@@ -454,3 +454,34 @@ async def test_reconnect_on_queue_name_conflict(connect):
     t2 = time.time()
     assert t2 - t1 >= ReconnectDelay, "send() should stall until reconnect"
     assert (await connection2.receive("x!y"))["type"] == "test.2"
+
+
+@ASYNC_TEST
+async def test_concurrent_send(connect):
+    """
+    Ensure all frames for one AMQP message are sent before another is sent.
+
+    https://github.com/CJWorkbench/channels_rabbitmq/issues/14
+    """
+    connection = connect("x")
+    await connection.group_add("test-group", "x!1")
+
+    # Send lots of concurrent messages: both with group_send() and send().
+    # We're sending concurrently. Order doesn't matter.
+    #
+    # It can take _lots_ of messages to trigger bug #14 locally. Prior to the
+    # bugfix (a mutex during publish), messages' frames could be interwoven;
+    # but with Python 3.6 on Linux that happened rarely when sending fewer than
+    # 100 concurrent messages locally.
+    texts = set(f"x{i}" for i in range(100))
+    messages = [{"type": text} for text in texts]
+    group_sends = [connection.group_send("test-group", m) for m in messages]
+    direct_sends = [connection.send("x!2", m) for m in messages]
+    group_receives = [asyncio.ensure_future(connection.receive("x!1")) for _ in texts]
+    direct_receives = [asyncio.ensure_future(connection.receive("x!2")) for _ in texts]
+    await asyncio.gather(
+        *(group_sends + direct_sends + group_receives + direct_receives)
+    )
+
+    assert set([m.result()["type"] for m in group_receives]) == texts
+    assert set([m.result()["type"] for m in direct_receives]) == texts
