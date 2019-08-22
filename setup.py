@@ -21,9 +21,9 @@ setup(
     include_package_data=True,
     install_requires=[
         "aioamqp~=0.13.0",
-        "asgiref~=3.1.2",
+        "asgiref~=3.1",
         "msgpack~=0.6.1",
-        "channels~=2.2.0",
+        "channels~=2.2",
     ],
     tests_require=["pytest~=3.6.0", "pytest-asyncio~=0.8", "pytest-timeout~=1.3.3"],
 )
