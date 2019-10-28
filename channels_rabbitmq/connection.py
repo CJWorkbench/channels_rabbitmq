@@ -319,7 +319,7 @@ class MultiQueue:
         # group_add() has no matching group_discard(). We only discard
         # within this one group because after we've discarded memberships,
         # the caller needs to check whether it should unbind from RabbitMQ.
-        other_keys = channels.keys()
+        other_keys = list(channels.keys())
         now = time.time()
         for other_key in other_keys:
             if channels[other_key] < now:
