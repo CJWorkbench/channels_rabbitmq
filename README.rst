@@ -150,27 +150,29 @@ differences:
 
 * **No ``flush`` extension**: To flush all state, simply disconnect all clients.
   (RabbitMQ won't allow one client to delete another client's data structures.)
-* **No ``group_expiry`` option**: the `group_expiry option
+* **No ``group_expiry`` option**: The `group_expiry option
   <https://channels.readthedocs.io/en/latest/channel_layer_spec.html#persistence>`_
   recovers when a ``group_add()`` has no matching ``group_discard()``. But the
   "group membership expiry" logic has a fatal flaw: it disconnects legitimate
-  members. ``channels_rabbitmq`` addresses the root problems directly:
-    * Web-server crash: RabbitMQ cleans all traces of a web server when it
-      disconnects. There's no problem here for ``group_expiry`` to solve.
-    * Programming errors: You may err and call ``group_add()`` without
-      eventually calling ``group_discard()``. Redis can't detect this
-      programming error (because it can't detect web-server crashes.) RabbitMQ
-      can. The ``local_expiry`` option keeps your site running when you
-      erroneously miss a ``group_discard()``. The channel layer warns when
-      discarding expired messages. Monitor your server logs to detect your
-      errors.
-* **No "normal channels"**: `normal channels
+  members. ``channels_rabbitmq`` addresses each root problem instead:
+
+  * Web-server crash: RabbitMQ wipes all state related to a web server when
+    the web server disconnects. There's no problem here for ``group_expiry``
+    to solve.
+  * Programming errors: You may err and call ``group_add()`` without
+    eventually calling ``group_discard()``. Redis can't detect this
+    programming error (because it can't detect web-server crashes). RabbitMQ
+    can. The ``local_expiry`` option keeps your site running after you
+    erroneously miss a ``group_discard()``. The channel layer warns when
+    discarding expired messages. Monitor your server logs to detect your
+    errors.
+* **No "normal channels"**: `Normal channels
   <https://channels.readthedocs.io/en/latest/channel_layer_spec.html#channels>`_
   are job queues. In most projects, "normal channel" readers are worker
   processes, ideally divorced from Websockets and Django.
 
   You are welcome to submit a ``channels_rabbitmq`` pull request to support this
-  nigh-undocumented aspect of the Channel Layer Specification. But why reinvent
+  under-specified aspect of the Channel Layer Specification. But why reinvent
   the wheel? There are thousands of job-queue implementations out there already.
   Django Channels is a bad fit, because it is tuned for Websockets.
 
@@ -183,8 +185,8 @@ differences:
   <https://github.com/celery/celery/milestone/7>`_, evaluate it, and then
   recommend an alternative to "normal channels." (With Celery 4, it's
   inefficient for workers to send messages to the Django Channels layer, because
-  they need to launch a new event loop and RabbitMQ connection per task.
-  Celery 5 may fix this.)
+  they need to launch a new event loop and RabbitMQ connection per task. You can
+  use Celery 4, but it's hard to recommend it. Celery 5 may fix this.)
 
 Dependencies
 ------------
