@@ -5,6 +5,9 @@ v1.2.0 - 2019-12-30
 * Deprecate ``group_expiry`` [issue #18] [PR #19]. Rationale:
   https://github.com/django/channels/issues/1371
 
+Users who previously configured a ``group_expiry`` should remove it. It will
+produce a deprecation warning, and it will be disallowed starting in v2.0.0.
+
 v1.1.5 - 2019-08-22
 ~~~~~~~~~~~~~~~~~~~
 
