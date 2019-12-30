@@ -1,3 +1,10 @@
+v1.2.0 - 2019-12-30
+~~~~~~~~~~~~~~~~~~~
+
+* Support Python 3.8 (upgrade to aioamqp=0.14.0) [issue #20] [PR #21]
+* Deprecate ``group_expiry`` [issue #18] [PR #19]. Rationale:
+  https://github.com/django/channels/issues/1371
+
 v1.1.5 - 2019-08-22
 ~~~~~~~~~~~~~~~~~~~
 

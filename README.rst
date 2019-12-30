@@ -44,15 +44,6 @@ Defaults to ``60``. You generally shouldn't need to change this, but you may
 want to turn it down if you have peaky traffic you wish to drop, or up if you
 have peaky traffic you want to backlog until you get to it.
 
-``group_expiry``
-~~~~~~~~~~~~~~~~
-
-Group expiry in seconds. Defaults to ``86400``. Channels will be removed from
-the group after this amount of time. It's recommended that you increase this
-parameter to ``86400000`` (1 year) and rely on explicit ``group_discard()`` to
-cancel subscriptions. (If your process halts, the group membership will
-disappear from RabbitMQ immediately: you needn't worry about leaks.)
-
 ``local_capacity``
 ~~~~~~~~~~~~~~~~~~
 
@@ -148,6 +139,52 @@ Once a connection has been created, it pollutes the event loop so that
 messages from RabbitMQ and routes them to receiver queues; each ``receive()``
 queries receiver queues. Empty queues are deleted. TODO delete queues that
 only contain expired messages, so we don't leak when sending to dead channels.
+
+Deviations from the Channel Layer Specification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The `Channel Layer Specification
+<https://channels.readthedocs.io/en/latest/channel_layer_spec.html>`_ bends to
+Redis-related restrictions. RabbitMQ cannot emulate Redis. Here are the
+differences:
+
+* **No ``flush`` extension**: To flush all state, simply disconnect all clients.
+  (RabbitMQ won't allow one client to delete another client's data structures.)
+* **No ``group_expiry`` option**: the `group_expiry option
+  <https://channels.readthedocs.io/en/latest/channel_layer_spec.html#persistence>`_
+  recovers when a ``group_add()`` has no matching ``group_discard()``. But the
+  "group membership expiry" logic has a fatal flaw: it disconnects legitimate
+  members. ``channels_rabbitmq`` addresses the root problems directly:
+    * Web-server crash: RabbitMQ cleans all traces of a web server when it
+      disconnects. There's no problem here for ``group_expiry`` to solve.
+    * Programming errors: You may err and call ``group_add()`` without
+      eventually calling ``group_discard()``. Redis can't detect this
+      programming error (because it can't detect web-server crashes.) RabbitMQ
+      can. The ``local_expiry`` option keeps your site running when you
+      erroneously miss a ``group_discard()``. The channel layer warns when
+      discarding expired messages. Monitor your server logs to detect your
+      errors.
+* **No "normal channels"**: `normal channels
+  <https://channels.readthedocs.io/en/latest/channel_layer_spec.html#channels>`_
+  are job queues. In most projects, "normal channel" readers are worker
+  processes, ideally divorced from Websockets and Django.
+
+  You are welcome to submit a ``channels_rabbitmq`` pull request to support this
+  nigh-undocumented aspect of the Channel Layer Specification. But why reinvent
+  the wheel? There are thousands of job-queue implementations out there already.
+  Django Channels is a bad fit, because it is tuned for Websockets.
+
+  If you want an async, RabbitMQ-based job queue, investigate `aiormq
+  <https://github.com/mosquito/aiormq>`_ and `aioamqp
+  <https://github.com/polyconseil/aioamqp>`_. You can even send your jobs
+  to a separate RabbitMQ server or virtual host.
+
+  Currently, this project's strategy is to wait for `Celery 5.0.0
+  <https://github.com/celery/celery/milestone/7>`_, evaluate it, and then
+  recommend an alternative to "normal channels." (With Celery 4, it's
+  inefficient for workers to send messages to the Django Channels layer, because
+  they need to launch a new event loop and RabbitMQ connection per task.
+  Celery 5 may fix this.)
 
 Dependencies
 ------------

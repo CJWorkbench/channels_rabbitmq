@@ -153,3 +153,14 @@ def test_async_to_sync_from_thread():
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     thread.join()
+
+
+def test_warn_when_group_expiry_set():
+    with pytest.warns(DeprecationWarning) as record:
+        RabbitmqChannelLayer(host=HOST, group_expiry=86400)
+    assert str(record[0].message) == (
+        "channels_rabbitmq does not support group_expiry. Please do not configure it. "
+        "For rationale, see "
+        "https://github.com/CJWorkbench/channels_rabbitmq/issues/18#issuecomment-547052373"
+    )
+    assert len(record) == 1

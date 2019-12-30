@@ -135,14 +135,13 @@ class MultiQueue:
 
             return item
 
-    def __init__(self, loop, capacity, local_expiry, group_expiry):
+    def __init__(self, loop, capacity, local_expiry):
         self.loop = loop
         self.capacity = capacity
         self.local_expiry = local_expiry
-        self.group_expiry = group_expiry
         self.n = 0
 
-        self.local_groups = defaultdict(dict)  # group => {channel => expire}
+        self.local_groups = {}  # group => {channel, ...}
         self._out = defaultdict(lambda: MultiQueue.OutQueue(self))
         self._closed = asyncio.Event(loop=loop)
         self._putter_wakeup = asyncio.Event(loop=loop)
@@ -293,8 +292,8 @@ class MultiQueue:
         if self._closed.is_set():
             return None
 
-        channels = self.local_groups[group]  # may create set
-        channels[asgi_channel] = time.time() + self.group_expiry
+        channels = self.local_groups.setdefault(group, set())
+        channels.add(asgi_channel)
         return len(channels)
 
     def group_discard(self, group, asgi_channel):
@@ -311,19 +310,9 @@ class MultiQueue:
 
         channels = self.local_groups[group]
         try:
-            del channels[asgi_channel]
+            channels.remove(asgi_channel)
         except KeyError:
             return None  # it was already removed
-
-        # Discard stale group memberships. These will happen if a
-        # group_add() has no matching group_discard(). We only discard
-        # within this one group because after we've discarded memberships,
-        # the caller needs to check whether it should unbind from RabbitMQ.
-        other_keys = list(channels.keys())
-        now = time.time()
-        for other_key in other_keys:
-            if channels[other_key] < now:
-                del channels[other_key]
 
         ret = len(channels)
 
@@ -445,7 +434,6 @@ class Connection:
         prefetch_count=10,
         expiry=60,
         local_expiry=None,
-        group_expiry=86400,
         ssl_context=None,
         groups_exchange="groups",
     ):
@@ -458,7 +446,6 @@ class Connection:
         self.prefetch_count = prefetch_count
         self.expiry = expiry
         self.local_expiry = local_expiry
-        self.group_expiry = group_expiry
         self.queue_name = queue_name
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
@@ -466,9 +453,7 @@ class Connection:
         # incoming_messages: await `get()` on any channel-name queue to receive
         # the next message. If the `get()` is canceled, that's probably because
         # the caller is going away: we'll delete the queue in that case.
-        self._incoming_messages = MultiQueue(
-            loop, local_capacity, local_expiry, group_expiry
-        )
+        self._incoming_messages = MultiQueue(loop, local_capacity, local_expiry)
 
         # pending_puts: a "purgatory" for messages as we put them into
         # incoming_messages.

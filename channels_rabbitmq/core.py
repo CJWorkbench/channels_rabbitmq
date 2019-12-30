@@ -3,6 +3,7 @@ import random
 import string
 import threading
 import types
+import warnings
 
 from channels.layers import BaseChannelLayer
 
@@ -50,7 +51,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         prefetch_count=10,
         expiry=60,
         local_expiry=None,
-        group_expiry=86400,
+        group_expiry=None,
         ssl_context=None,
         groups_exchange="groups",
     ):
@@ -60,9 +61,18 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         self.prefetch_count = prefetch_count
         self.expiry = expiry
         self.local_expiry = local_expiry
-        self.group_expiry = 86400
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
+
+        if group_expiry is not None:
+            warnings.warn(
+                (
+                    "channels_rabbitmq does not support group_expiry. Please do not configure it. "
+                    "For rationale, see "
+                    "https://github.com/CJWorkbench/channels_rabbitmq/issues/18#issuecomment-547052373"
+                ),
+                category=DeprecationWarning,
+            )
 
         # In inefficient client code (e.g., async_to_sync()), there may be
         # several send() or receive() calls within different event loops --
@@ -94,7 +104,6 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             prefetch_count=self.prefetch_count,
             expiry=self.expiry,
             local_expiry=self.local_expiry,
-            group_expiry=self.group_expiry,
             ssl_context=self.ssl_context,
             groups_exchange=self.groups_exchange,
         )
