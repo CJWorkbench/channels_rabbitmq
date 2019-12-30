@@ -21,14 +21,14 @@ before_install:
 
 install:
   - pip install black pyflakes isort
-  - pip install -e .[tests]
+  - pip install -e .
   - pip freeze
 
 script:
   - pyflakes .
   - black --check .
   - isort --check-only --diff --recursive channels_rabbitmq tests
-  - pytest --verbose
+  - python ./setup.py test
 
 deploy:
   provider: pypi
