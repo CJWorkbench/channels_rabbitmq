@@ -21,7 +21,7 @@ before_install:
 
 install:
   - pip install black pyflakes isort
-  - pip install -e .
+  - pip install -e .[tests]
   - pip freeze
 
 script:
