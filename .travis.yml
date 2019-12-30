@@ -4,6 +4,8 @@ language: python
 
 python:
   - "3.6"
+  - "3.7"
+  - "3.8"
 
 services:
   - docker
@@ -26,7 +28,7 @@ script:
   - pyflakes .
   - black --check .
   - isort --check-only --diff --recursive channels_rabbitmq tests
-  - pytest --verbose
+  - pytest -v
 
 deploy:
   provider: pypi
