@@ -2,7 +2,7 @@ import asyncio
 import functools
 import logging
 import time
-from collections import defaultdict, deque
+from collections import deque
 from typing import Optional
 
 import aioamqp
@@ -142,7 +142,7 @@ class MultiQueue:
         self.n = 0
 
         self.local_groups = {}  # group => {channel, ...}
-        self._out = defaultdict(lambda: MultiQueue.OutQueue(self))
+        self._out = {}  # asgi_channel => MultiQueue
         self._closed = asyncio.Event(loop=loop)
         self._putter_wakeup = asyncio.Event(loop=loop)
         self._putter_semaphore = asyncio.BoundedSemaphore(self.capacity)
@@ -205,7 +205,8 @@ class MultiQueue:
         expires = now + self.local_expiry
 
         self.n += 1
-        # may create self._out[asgi_channel]
+        if asgi_channel not in self._out:
+            self._out[asgi_channel] = MultiQueue.OutQueue(self)
         self._out[asgi_channel].put(message, expires)
         _wakeup_next(self._out[asgi_channel]._getters)
 
@@ -278,11 +279,13 @@ class MultiQueue:
             raise ChannelClosed
 
         try:
-            # may create self._out[asgi_channel]
+            if asgi_channel not in self._out:
+                self._out[asgi_channel] = MultiQueue.OutQueue(self)
             item = await self._out[asgi_channel].get()
         finally:  # Even if there's an asyncio.CancelledError
             if (
-                not self._out[asgi_channel]._queue
+                asgi_channel in self._out  # it may have been deleted in await
+                and not self._out[asgi_channel]._queue
                 and not self._out[asgi_channel]._getters
             ):
                 del self._out[asgi_channel]
