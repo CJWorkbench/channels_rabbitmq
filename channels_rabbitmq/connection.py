@@ -725,7 +725,16 @@ class Connection:
             # self._incoming_messages is at capacity.
             await self._incoming_messages.put_channel(asgi_channel, data)
         else:
-            await self._incoming_messages.put_group(group, data)
+            # _groups_lock: prevent adding/deleting channels on group during
+            # send to all its members. See
+            # https://github.com/CJWorkbench/channels_rabbitmq/issues/23
+            # ... [adamhooper, 2020-03-09] I couldn't build a test to replicate
+            # the bug, so be careful here!
+            #
+            # Back-pressure if self._incoming_messages is at capacity. That
+            # means group_add() and group_remove() will also back-pressure.
+            async with self._groups_lock:
+                await self._incoming_messages.put_group(group, data)
 
         await ack_message_if_we_can(channel, delivery_tag)
 
