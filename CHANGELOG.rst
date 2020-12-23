@@ -1,3 +1,10 @@
+v1.3.0 - 2020-12-23
+~~~~~~~~~~~~~~~~~~~
+
+* Don't crash when called in async_to_sync() on asgiref >= 3.2.4
+* Nix some deprecation warnings
+* Allow installing alongside django-channels 3.0. [issue #29]
+
 v1.2.1 - 2020-03-09
 ~~~~~~~~~~~~~~~~~~~
 

@@ -233,7 +233,7 @@ First, start a development RabbitMQ server::
 
 Now take on the development cycle:
 
-#. ``python ./setup.py pytest`` # to ensure tests pass.
+#. ``tox`` # to ensure tests pass.
 #. Write new tests in ``tests/`` and make sure they fail.
 #. Write new code in ``channels_rabbitmq/`` to make the tests pass.
 #. Submit a pull request.

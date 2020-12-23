@@ -1,0 +1,64 @@
+[build-system]
+requires = ["poetry_core>=1.0.0", "poetry-dynamic-versioning>=0.12.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "channels_rabbitmq"
+version = "0.0.0"
+description = "RabbitMQ-based ASGI channel layer implementation"
+authors = ["Adam Hooper <adam@adamhooper.com>"]
+license = "BSD"
+readme = "README.rst"
+
+[tool.poetry.dependencies]
+python = "~=3.6"
+aioamqp = "~=0.14.0"
+asgiref = "~=3.1"
+msgpack = ">=0.6.1,<2"
+channels = ">=2.2,<4"
+
+[tool.poetry.dev-dependencies]
+pytest = "~=6.1"
+pytest-asyncio = "~=0.14"
+pytest-timeout = "~= 1.4"
+
+[tool.isort]
+# Black compatibility
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+line_length = 88
+known_first_party = ["channels", "asgiref", "channels_rabbitmq"]
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+isolated_build = True
+skipsdist = True
+envlist = py38-{pyflakes,black,isort,pytest}
+
+[flake8]
+exclude = venv/*,tox/*,specs/*,build/*
+ignore = E123,E128,E266,E402,W503,E731,W601
+max-line-length = 88
+
+[testenv]
+deps =
+  pyflakes: pyflakes>=2.2
+  black: black
+  isort: isort
+commands =
+  pyflakes: pyflakes channels_rabbitmq tests
+  black: black --check channels_rabbitmq tests
+  isort: isort --check --diff channels_rabbitmq tests
+
+[testenv:py38-pytest]
+deps =
+  pytest~=6.0
+  pytest-asyncio~=0.14
+  pytest-timeout~=1.4
+commands =
+  pip install -q .
+  pytest -s
+"""

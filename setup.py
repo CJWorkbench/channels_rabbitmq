@@ -7,7 +7,7 @@ from channels_rabbitmq import __version__
 # We use the README as the long_description
 readme = open(join(dirname(__file__), "README.rst")).read()
 
-tests_require = ["pytest~=3.6.0", "pytest-asyncio~=0.8", "pytest-timeout~=1.3.3"]
+tests_require = ["pytest~=6.1", "pytest-asyncio~=0.14", "pytest-timeout~=1.4"]
 
 setup(
     name="channels_rabbitmq",
@@ -24,8 +24,8 @@ setup(
     install_requires=[
         "aioamqp~=0.14.0",
         "asgiref~=3.1",
-        "msgpack~=0.6.1",
-        "channels~=2.2",
+        "msgpack>=0.6.1,<2.0",
+        "channels>=2.2,<4.0",
     ],
     tests_require=tests_require,  # for `python ./setup.py test`
     extras_require={"tests": tests_require},  # for bare `pytest`
