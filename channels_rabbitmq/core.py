@@ -115,7 +115,15 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         def _wrapper(self, *args, **kwargs):  # self = loop
             # If the event loop was closed, there's nothing we can do anymore.
             if not self.is_closed():
-                self.run_until_complete(connection.close())
+                try:
+                    self.run_until_complete(connection.close())
+                except asyncio.CancelledError:
+                    # asgiref 3.2.4+ kills the aioamqp "listen" task before
+                    # calling `loop.close()`. So `connection.close()` might
+                    # finish _sending_ a "close" to RabbitMQ ... but we're
+                    # doomed to see a CancelledError.
+                    # ref: https://github.com/django/asgiref/issues/145
+                    pass
 
             with manager._connections_lock:
                 if self in manager._connections:
