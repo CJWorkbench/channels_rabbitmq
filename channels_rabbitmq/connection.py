@@ -143,8 +143,8 @@ class MultiQueue:
 
         self.local_groups = {}  # group => {channel, ...}
         self._out = {}  # asgi_channel => MultiQueue
-        self._closed = asyncio.Event(loop=loop)
-        self._putter_wakeup = asyncio.Event(loop=loop)
+        self._closed = asyncio.Event()
+        self._putter_wakeup = asyncio.Event()
         self._putter_semaphore = asyncio.BoundedSemaphore(self.capacity)
         self._last_logged_backpressure = 0  # time.time() result
         self._last_logged_expiry = 0  # time.time() result
@@ -502,11 +502,11 @@ class Connection:
         # When disconnected, lots of calls will wait on self._connect_event.
         # When it gets set, that doesn't mean "we've connected": it just means,
         # "check again whether self._is_connected".
-        self._connect_event = asyncio.Event(loop=loop)
+        self._connect_event = asyncio.Event()
 
         # self.worker: Something to await, to know that _everything_ is finished
         # (useful in unit tests when we actually want to disconnect).
-        self.worker = asyncio.ensure_future(self._connect_forever(), loop=loop)
+        self.worker = asyncio.ensure_future(self._connect_forever())
 
     @property
     def _is_connected(self):
