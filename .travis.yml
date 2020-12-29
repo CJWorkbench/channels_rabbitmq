@@ -9,7 +9,6 @@ python:
 
 services:
   - docker
-
 before_install:
   - ssl/prepare-certs.sh
   # Use Docker rabbitmq instead of Travis'. Travis's gave us test failures
@@ -19,19 +18,21 @@ before_install:
   # Now it'll start up while we're doing our install. There's a race, but
   # it's extremely likely rabbitmq will be up before pytest starts.
   - python -m pip install poetry tox-travis
-
 install: poetry install -v
-
 script: tox
 
 jobs:
   include:
     - stage: deploy
       python: "3.8"
+      before_install: python -m pip install poetry
+      install: skip
+      script: skip
       before_deploy:
         - poetry version $(git describe --tags --exact-match --match="v*.*.*" | cut -b2-)  # fallback "" means, "0.0.0"
         - poetry config pypi-token.pypi $PYPI_TOKEN
       deploy:
+        skip_cleanup: true  # so "poetry version" stays
         provider: script
         script: poetry publish --build
         on:
