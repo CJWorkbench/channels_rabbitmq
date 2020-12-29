@@ -1,3 +1,9 @@
+v1.3.1 - 2020-12-29
+~~~~~~~~~~~~~~~~~~~
+
+* Fix package __version__ metadata, which prevented some users from
+  installing v1.3.0. [issue #30] [PR #31]
+
 v1.3.0 - 2020-12-23
 ~~~~~~~~~~~~~~~~~~~
 

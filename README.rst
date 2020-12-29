@@ -243,10 +243,8 @@ To deploy
 
 Use `semver <https://semver.org/>`_.
 
-#. Change ``__version__`` in ``channels_rabbitmq/__init__.py``.
-#. Add to ``CHANGELOG.rst``.
-#. ``git commit channels_rabbitmq/__init__.py CHANGELOG.rst -m 'vX.X.X'`` but don't push.
+#. ``git push`` and make sure Travis tests all pass.
 #. ``git tag vX.X.X``
-#. ``git push --tags && git push``
+#. ``git push --tags``
 
 TravisCI will push to PyPi.

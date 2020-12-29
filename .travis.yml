@@ -1,5 +1,5 @@
-sudo: false
-
+os: linux
+dist: xenial
 language: python
 
 python:
@@ -18,23 +18,21 @@ before_install:
   - docker run --rm -d -p 5671:5671 -p 5672:5672 -v "/${TRAVIS_BUILD_DIR}"/ssl:/ssl -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert -e RABBITMQ_SSL_KEYFILE=/ssl/server.key -e RABBITMQ_SSL_VERIFY=verify_peer -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true rabbitmq:3.7.8-alpine
   # Now it'll start up while we're doing our install. There's a race, but
   # it's extremely likely rabbitmq will be up before pytest starts.
+  - python -m pip install poetry tox-travis
+  - poetry version $(git describe --tags --match="v*.*.*" | cut -b2-)  # fallback "" means, "0.0.0"
 
-install:
-  - pip install black pyflakes isort
-  - pip install -e .[tests]
-  - pip freeze
+install: poetry install -v
 
-script:
-  - pyflakes .
-  - black --check .
-  - isort --check-only --diff --recursive channels_rabbitmq tests
-  - pytest -v
+script: tox
+
+before_deploy: poetry config pypi-token.pypi $PYPI_TOKEN
 
 deploy:
-  provider: pypi
-  user: adamhooper
-  password:
-    secure: "suKZQmAkmtdPIWJkfjI7oU6BoL7qawmGOe21dVwBlgJlLQ/hovsorhy8Ins5rkxnui7k4dRO9djar6XRCPAu2C4045SsKRZXvbjjpD3GUJCuDrLYAFBZ91GFsWX7JhBFumP068KE0XnFYFw5sGCnGYrWwnhnrNSP8ZNnBwQ7Pgb3RK7UPZISuZt2JNudMp7dByigC/yv4B7GnAS7WFh3wPXvAtIrufePrVm0I2rrX+ItXi3+a/un3qccLy+cUNqsH0emrCCHveRHdiCdzG1q3c69h6igjA1rBg1TJlDYtmDUjEZBS02yhX1Q71K+UkoV83IX7GrKa4k/lBXkCciMaFn/MpRrWVgIQNgC/3OGyi3w28IOGQJFUhxGhTyoyxqXKWf6xTyS8QGAZR/YkWMLZI26FBUbpaop8zz8Faxbma289vnWPN33oDnBLCEmzK2l41ChuMz7QpVByX+m/85WmXqmc9V5RM8WaY+oa+ZhCvm2pLHswrRk2CDOWinSfjyaraOTKgvcyLxDwu6Lx7xA9mHAybidfjWP6ZJ6giIE2bos67qVZHSIm5j82u3ksDLfkZJzRtuBfNFyZkuMcO+q1a5WSaRIfTWwnh8XitGBu+z43I1RYW6UZBJRxnML0XULZ8FpvsxFXuRgq+aOxSOMkZk/R4OtIvCMzMg6u+ehxEk="
+  provider: script
+  script: poetry publish --build
   on:
     tags: true
-  skip_existing: true
+
+env:
+  global:
+    - secure: "VIFkyoPhDkYAc8pNvOavctV+vLkLlq1FzmmD1ZGgEC8HVgQUFjIf3WTzOb+Q6QWWIGIcR8xFeBhyOoFbkpleSImvS1DxBBtWyAo6mDKL3OUeUTKOJWFXYtO8W0DWDf+jzG8npBL47Lp4Ye2wgsQ04BZPZAHw+zHZafEK/xkYCChACAzCZn7m4FuRZ12SQ9M+jaXKJb7GkYh7AxFPWk8GNlcvBngGP4WnuZLLcra/XFSsZ5OIPg7SgfaqMWM8R7y3qjKKmNUXwGwn/vMhFSeRgOHkHfghG0Fk2jJ1noY9CoMZFMlHu4x3wplzKHVd777GsFM67T4ydcKqyqpVUj16QbdHtIoWZIJII2ExyF3zm539RlaXBOXHhCs1XlHq4lb4voe7Ya95+Jq5BHLhq+1O000X+w5uMVXUHSgjXIzibYzNMh6YhYNM4F+igCsFvnmJpZkl18nOSZfcsR25sfzHtBGC956vqJYEeHW36ggzjRhMloU1kei7fNipeyA1rWlt+ftO782i+iZu7PlcnLlyguU9BoNbTKDDeEa+WJp2aQwYbRDEiipu33VvLtSGHyJN6I/Pj6FlFbgllwze6vmLlnIq4NbnTxaRVRQk6NSfbl4doSonTV+Uzojc0Nqn5+kU4BC9rWtTAlu1dACU3eSBFZryL2rOm4QqwXuOCBC53V8=" # PYPI_TOKEN=...
