@@ -6,6 +6,7 @@ from collections import deque
 from typing import Optional
 
 import aioamqp
+import aioamqp.protocol
 import msgpack
 from aioamqp.exceptions import AmqpClosedConnection, ChannelClosed, PublishFailed
 
@@ -17,6 +18,21 @@ logger = logging.getLogger(__name__)
 ReconnectDelay = 1.0  # seconds
 BackpressureWarningInterval = 5.0  # seconds
 ExpiryWarningInterval = 5.0  # seconds
+
+
+class AioamqpProtocolWithIssue90Solved(aioamqp.protocol.AmqpProtocol):
+    async def run(self):
+        # rewrite of aioamqp.AmqpProtocol.run() to nix the exception catch-all
+        while not self.stop_now.done():
+            try:
+                await self.dispatch_frame()
+            except AmqpClosedConnection as exc:
+                aioamqp.protocol.logger.info("Close connection")
+                self.stop_now.set_result(None)
+
+                self._close_channels(exception=exc)
+            # except Exception:
+            #     logger.exception('error on dispatch')
 
 
 def serialize(body):
@@ -50,6 +66,10 @@ async def gather_without_leaking(tasks):
     try:
         # Run, raising first exception
         await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        # async_to_sync() can cause these. asyncio.CancelledError should not be
+        # an Exception, but is is in Python <=3.7
+        raise
     except Exception:
         # Wait for all tasks to finish, exceptional or not
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -543,6 +563,10 @@ class Connection:
                     ReconnectDelay,
                 )
                 await asyncio.sleep(ReconnectDelay)
+            except asyncio.CancelledError:
+                # async_to_sync() can cause these. asyncio.CancelledError should not be
+                # an Exception, but is is in Python <=3.7
+                raise  # and crash
             except Exception:
                 logger.exception("Unhandled exception from aioamqp")
                 raise  # and crash
@@ -559,7 +583,11 @@ class Connection:
 
     async def _connect_and_run(self):
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
-        transport, protocol = await aioamqp.from_url(self.host, ssl=self.ssl_context)
+        transport, protocol = await aioamqp.from_url(
+            self.host,
+            ssl=self.ssl_context,
+            protocol_factory=AioamqpProtocolWithIssue90Solved,
+        )
         try:
             channel = await self._setup_channel_during_connect(protocol)
             self._protocol = protocol
@@ -567,6 +595,8 @@ class Connection:
             self._channel = channel
             self._notify_connect_event()  # anyone waiting for us?
         except asyncio.CancelledError:
+            # async_to_sync() can cause these. asyncio.CancelledError should not be
+            # an Exception, but is is in Python <=3.7
             raise
         except Exception:
             # Disconnect (because `transport` and `protocol` are going out of
@@ -689,6 +719,10 @@ class Connection:
                 raise RuntimeError("Message has both channel and group")
             elif not asgi_channel and not group:
                 raise RuntimeError("Message has neither channel nor group")
+        except asyncio.CancelledError:
+            # async_to_sync() can cause these. asyncio.CancelledError should not be
+            # an Exception, but is is in Python <=3.7
+            raise
         except Exception:
             await ack_message_if_we_can(channel, envelope.delivery_tag)
             raise

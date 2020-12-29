@@ -37,7 +37,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = py38-{pyflakes,black,isort,pytest}
+envlist = {py36,py37,py38}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
@@ -45,21 +45,16 @@ ignore = E123,E128,E266,E402,W503,E731,W601
 max-line-length = 88
 
 [testenv]
+whitelist_externals: poetry
 deps =
   pyflakes: pyflakes>=2.2
   black: black
   isort: isort
+commands_pre =
+  pytest: poetry install -v
 commands =
   pyflakes: pyflakes channels_rabbitmq tests
   black: black --check channels_rabbitmq tests
   isort: isort --check --diff channels_rabbitmq tests
-
-[testenv:py38-pytest]
-deps =
-  pytest~=6.0
-  pytest-asyncio~=0.14
-  pytest-timeout~=1.4
-commands =
-  pip install -q .
-  pytest -s
+  pytest: poetry run pytest -v -s
 """

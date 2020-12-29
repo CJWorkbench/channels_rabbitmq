@@ -3,6 +3,7 @@ v1.3.1 - 2020-12-29
 
 * Fix package __version__ metadata, which prevented some users from
   installing v1.3.0. [issue #30] [PR #31]
+* Fix async_to_sync() behavior on Python 3.6 and 3.7.
 
 v1.3.0 - 2020-12-23
 ~~~~~~~~~~~~~~~~~~~

@@ -8,7 +8,11 @@ from channels_rabbitmq.core import RabbitmqChannelLayer
 HOST = "amqp://guest:guest@localhost/"
 
 
-@pytest.mark.asyncio
+def ASYNC_TEST(fn):
+    return pytest.mark.timeout(8)(pytest.mark.asyncio(fn))
+
+
+@ASYNC_TEST
 async def test_send_receive():
     """
     Makes sure we can send a message to a normal channel then receive it.
@@ -21,6 +25,7 @@ async def test_send_receive():
     assert message["text"] == "Ahoy-hoy!"
 
 
+@pytest.mark.timeout(8)
 def test_multiple_event_loops():
     """
     Makes sure we can receive from two different event loops using
@@ -42,7 +47,7 @@ def test_multiple_event_loops():
     async_to_sync(send_and_close)({"type": "test.message.2"})
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_process_local_send_receive():
     """
     Makes sure we can send a message to a process-local channel then receive it.
@@ -55,7 +60,7 @@ async def test_process_local_send_receive():
     assert message["text"] == "Local only please"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_process_remote_send_receive():
     """
     Makes sure we can send a message to a process-local channel then receive it.
@@ -74,7 +79,7 @@ async def test_process_remote_send_receive():
     assert message["text"] == "Remote only please"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_reject_bad_channel():
     """
     Makes sure sending/receiving on an invalic channel name fails.
@@ -86,7 +91,7 @@ async def test_reject_bad_channel():
         await layer.receive("=+135!")
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_reject_bad_client_prefix():
     """
     Makes sure receiving on a non-prefixed local channel is not allowed.
@@ -96,7 +101,7 @@ async def test_reject_bad_client_prefix():
         await layer.receive("not-client-prefix!local_part")
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_within_layer():
     """
     Tests basic group operation.
@@ -120,7 +125,7 @@ async def test_groups_within_layer():
     assert (await layer.receive(channel2))["type"] == "message.2"
 
 
-@pytest.mark.asyncio
+@ASYNC_TEST
 async def test_groups_exchange():
     """
     Tests custom group exchange.
@@ -144,6 +149,7 @@ async def test_groups_exchange():
     assert (await layer2.receive(channel2))["type"] == "message.2"
 
 
+@pytest.mark.timeout(8)
 def test_async_to_sync_from_thread():
     def run():
         layer = RabbitmqChannelLayer(host=HOST)
