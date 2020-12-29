@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from aioamqp.exceptions import ChannelClosed
+from aiormq.exceptions import ChannelClosed
 
 from channels.exceptions import ChannelFull
 from channels_rabbitmq.connection import Connection, ReconnectDelay
