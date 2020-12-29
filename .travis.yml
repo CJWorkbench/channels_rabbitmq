@@ -19,7 +19,7 @@ before_install:
   # Now it'll start up while we're doing our install. There's a race, but
   # it's extremely likely rabbitmq will be up before pytest starts.
   - python -m pip install poetry tox-travis
-  - poetry version $(git describe --tags --match="v*.*.*" | cut -b2-)  # fallback "" means, "0.0.0"
+  - poetry version $(git describe --tags --exact-match --match="v*.*.*" | cut -b2-)  # fallback "" means, "0.0.0"
 
 install: poetry install -v
 
