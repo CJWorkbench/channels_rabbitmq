@@ -5,7 +5,7 @@ from typing import Any, Awaitable, Callable, List, NamedTuple, Tuple
 
 import aiormq
 import msgpack
-from aiormq.exceptions import ChannelClosed, ConnectionClosed, PublishError
+from aiormq.exceptions import ChannelClosed, ConnectionClosed, DeliveryError
 
 from channels.exceptions import ChannelFull
 
@@ -46,7 +46,8 @@ async def gather_without_leaking(tasks):
         raise
     except Exception:
         # Wait for all tasks to finish, exceptional or not
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+        raise
 
 
 def _wakeup_next(waiters):
@@ -114,8 +115,20 @@ class MultiQueue:
     class ChannelQueue:
         """An "inner" queue: a single Django-Channels channel's MessageHandles.
 
-        This has `.get()` and `.put_nowait()`, like `asyncio.Queue`. It also has
-        remove_expired(), which removes all expired MessageHandles.
+        This solves a problem in the Django Channels Specification: a channel
+        can exist without the layer knowing about it.
+
+        Steps to reproduce the problem:
+
+            1. Sender: send a message
+            2. Recipient: receive the message
+
+        This is backwards: the sender sent a message before the recipient
+        even existed! But yep, that's the spec. The recipient _polls_ for
+        messages, so it doesn't exist when it's busy or during startup.
+
+        Hence ChannelQueue: it's like asyncio.queue(), but with a notion of
+        "unused". An unused queue is an empty queue with no getter.
         """
 
         def __init__(self):
@@ -130,15 +143,15 @@ class MultiQueue:
 
         async def get(self) -> MessageHandle:
             """Wait for a message to become available, then return it."""
-            return self.queue.get()
+            return await self._queue.get()
 
         def remove_expired(self, now: float) -> List[MessageHandle]:
-            """Remove and return MessageHandlers we won't use."""
+            """Remove and return MessageHandles we won't use."""
             ret = []
             # We need to peek: self._queue is an asyncio.Queue, and
             # self._queue._queue is the collections.deque() _inside_ it.
             while not self._queue.empty() and self._queue._queue[0].expires <= now:
-                ret.push(self._queue._queue.popleft())
+                ret.append(self._queue._queue.popleft())
             return ret
 
         @property
@@ -152,6 +165,14 @@ class MultiQueue:
             except IndexError:
                 raise ValueError("Queue is empty") from None
 
+        def close(self) -> None:
+            """Raise ChannelClosed on all readers."""
+            for waiter in self._queue._getters:
+                if not waiter.done():
+                    waiter.set_exception(
+                        ChannelClosed("<channels_rabbitmq.connection.Connection>", "")
+                    )
+
     def __init__(self, loop, capacity, local_expiry):
         self.loop = loop
         self.capacity = capacity
@@ -159,85 +180,82 @@ class MultiQueue:
         self.n = 0
 
         self.local_groups = {}  # group => {channel, ...}
-        self._queues = {}  # asgi_channel => OutQueue
+        self._queues = {}  # asgi_channel => ChannelQueue
+        self._nonempty = asyncio.Event()
         self._closed = asyncio.Event()
         # We'll order puts using a lock. Waiters on an asyncio.Lock are
         # released in FIFO order.
         self._putter_lock = asyncio.Lock()
-        self._nonempty = asyncio.Event()
-        self._nonempty.set()
         self._last_logged_backpressure = 0  # loop.time() result
         self._last_logged_expiry = 0  # loop.time() result
 
-    def _drop_all_expired(self, now: float):
-        messages_to_delete = []
+    def _drop_all_expired(self, now: float) -> bool:
+        """Drop expired messages; return `true` if something happened."""
+        deleted = False
         channels_to_delete = []
         for asgi_channel, queue in self._queues.items():
-            messages_to_delete.extend(queue.remove_expired(now))
+            for message_handle in queue.remove_expired(now):
+                deleted = True
+                message_handle.begin_ack()
             if queue.unused():
                 channels_to_delete.append(asgi_channel)
-        for message_handle in messages_to_delete:
-            self._cleanup_message(message_handle)
         for asgi_channel in channels_to_delete:
             del self._queues[asgi_channel]
+        return deleted
 
-    def _soonest_expiry(self) -> float:
-        # Assumes there is at least one message queued somewhere.
-        return min(
-            [
-                queue.soonest_expiry
-                for queue in self._queues.values()
-                if not queue.empty()
-            ]
-        )
+    async def expire_locally_until_closed(self):
+        while True:
+            await asyncio.wait(
+                {self._nonempty.wait(), self._closed.wait()},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self._closed.is_set():
+                return
 
-    async def _put_nowait(
-        self, asgi_channel: str, message_handle: MessageHandle
-    ) -> None:
-        self.n += 1  # decreased in self._cleanup_message()
-        if self.n >= self.capacity:
-            self._nonempty.set()
+            # Assume messages expire in FIFO order. Therefore, we know there's
+            # no need to check for expiry until the first unhandled message
+            # expires.
+            soonest_expiry = min(
+                [
+                    queue.soonest_expiry
+                    for queue in self._queues.values()
+                    if not queue._queue.empty()
+                ]
+            )
+            now = asyncio.get_event_loop().time()
+            if now < soonest_expiry:
+                try:
+                    await asyncio.wait_for(
+                        self._closed.wait(), timeout=soonest_expiry - now
+                    )
+                    return  # closed!
+                except asyncio.TimeoutError:
+                    now = asyncio.get_event_loop().time()  # good
 
+            # Now, we know timed_out.is_set()
+            dropped = self._drop_all_expired(now)
+            if dropped:
+                self._log_local_expiry_debounced(now)
+
+    def _put_nowait(self, asgi_channel: str, message_handle: MessageHandle) -> None:
         if asgi_channel not in self._queues:
             self._queues[asgi_channel] = MultiQueue.ChannelQueue()
-        message_handle = message_handle._replace(
-            begin_ack=functools.partial(self._cleanup_message, message_handle.begin_ack)
-        )
+        begin_ack = functools.partial(self._cleanup_message, message_handle)
+        message_handle = message_handle._replace(begin_ack=begin_ack)
         self._queues[asgi_channel].put_nowait(message_handle)
 
-    async def _put_messages(
-        self, channel_messages: List[Tuple[str, MessageHandle]]
-    ) -> None:
-        """Wait for `local_capacity`; then put to a queue and notify.
+    def _put_messages(self, channel_messages: List[Tuple[str, MessageHandle]]) -> None:
+        for asgi_channel, message_handle in channel_messages:
+            self._put_nowait(asgi_channel, message_handle)
 
-        A lock ensures that puts happen in FIFO order: the first call to
-        put_channel() or put_group() will finish before the next begins.
-        """
-        with self._putter_lock:
-            for asgi_channel, message_handle in channel_messages:
-                while not self._nonempty.is_set() and not self._closed.is_set():
-                    now = self.loop.time()
-                    self._drop_all_expired(now)
-                    if self.n < self.capacity:
-                        break
+        self.n += 1  # decreased in self._cleanup_message()
+        if self.n >= self.capacity:
+            now = self.loop.time()
+            self._log_backpressure_debounced(now)
+        if self.n > 0:
+            self._nonempty.set()
 
-                    self._log_backpressure_debounced(now)
-                    try:
-                        # Wait until the first of:
-                        # * self._cleanup_message() (via get())
-                        # * self.close()
-                        # * message expiry (via timeout)
-                        timeout = self._soonest_expiry() - now
-                        await asyncio.wait_for(self._nonempty.wait(), timeout=timeout)
-                    except asyncio.TimeoutError:
-                        pass  # loop; we'll drop more messages
-
-                if self._closed.is_set():
-                    return
-
-                self._put_nowait(asgi_channel, message_handle)
-
-    async def put_channel(
+    def put_channel_nowait(
         self, asgi_channel: str, message_handle: MessageHandle
     ) -> None:
         """Queue a message.
@@ -245,9 +263,9 @@ class MultiQueue:
         This will eventually call `message_handle.begin_ack()`. It will call it
         promptly usually; it will call it slowly when back-pressure is better.
         """
-        await self._put_messages([(asgi_channel, message_handle)])
+        self._put_messages([(asgi_channel, message_handle)])
 
-    async def put_group(self, group: str, message_handle: MessageHandle) -> None:
+    def put_group_nowait(self, group: str, message_handle: MessageHandle) -> None:
         """Queue a message into all channels in `group` (selected atomically).
 
         This will call `message_handle.begin_ack()` once, after _all_ deliveries
@@ -273,15 +291,16 @@ class MultiQueue:
 
         child_handle = message_handle._replace(begin_ack=countdown_to_begin_ack)
         messages = [(asgi_channel, child_handle) for asgi_channel in asgi_channels]
-        await self._put_messages(messages)
+        self._put_messages(messages)
 
     def _cleanup_message(self, message_handle: MessageHandle) -> None:
         self.n -= 1
-        self._nonempty.set()
+        if self.n == 0:
+            self._nonempty.clear()
         message_handle.begin_ack()
 
     def _build_big_queues_str(self) -> str:
-        blockers = [(name, len(q._queue)) for name, q in self._queues.items()]
+        blockers = [(name, len(q._queue._queue)) for name, q in self._queues.items()]
         blockers.sort(key=lambda b: b[1], reverse=True)
         return ", ".join(f"{name} ({count})" for name, count in blockers[:3])
 
@@ -331,7 +350,7 @@ class MultiQueue:
 
         try:
             if asgi_channel not in self._queues:
-                self._queues[asgi_channel] = MultiQueue.OutQueue(self)
+                self._queues[asgi_channel] = MultiQueue.ChannelQueue()
             item = await self._queues[asgi_channel].get()
         finally:  # Even if there's an asyncio.CancelledError
             if (
@@ -339,7 +358,7 @@ class MultiQueue:
                 and self._queues[asgi_channel].unused()
             ):
                 del self._queues[asgi_channel]
-        self._cleanup_message(item)
+        item.begin_ack()
         return item.data
 
     def group_add(self, group, asgi_channel):
@@ -382,9 +401,7 @@ class MultiQueue:
 
         # Cancel all gets
         for out_queue in self._queues.values():
-            for waiter in out_queue._getters:
-                if not waiter.done():
-                    waiter.set_exception(ChannelClosed)
+            out_queue.close()
         self._queues.clear()
 
 
@@ -420,7 +437,7 @@ def stall_until_connected_or_closed(fn):
 
 async def ack_message_if_we_can(channel, delivery_tag):
     try:
-        await channel.basic_client_ack(delivery_tag)
+        await channel.basic_ack(delivery_tag)
         logger.debug("Acked delivery %s", delivery_tag)
     except ChannelClosed:
         # we tried to ack/nack and failed because we're closed. Assume
@@ -431,7 +448,7 @@ async def ack_message_if_we_can(channel, delivery_tag):
         # At-least-once delivery.
         logger.debug("ConnectionClosed acking delivery %s", delivery_tag)
     except Exception:
-        logger.warn("Unexpected failure during ack")  # print stack trace
+        logger.exception("Unexpected failure during ack")  # print stack trace
 
 
 class Connection:
@@ -480,7 +497,6 @@ class Connection:
         *,
         local_capacity=100,
         remote_capacity=100,
-        prefetch_count=10,
         expiry=60,
         local_expiry=None,
         ssl_context=None,
@@ -492,7 +508,6 @@ class Connection:
         self.host = host
         self.local_capacity = local_capacity
         self.remote_capacity = remote_capacity
-        self.prefetch_count = prefetch_count
         self.expiry = expiry
         self.local_expiry = local_expiry
         self.queue_name = queue_name
@@ -527,6 +542,9 @@ class Connection:
         # self.worker: Something to await, to know that _everything_ is finished
         # (useful in unit tests when we actually want to disconnect).
         self.worker = asyncio.ensure_future(self._connect_forever())
+        self.expiry_worker = asyncio.ensure_future(
+            self._incoming_messages.expire_locally_until_closed()
+        )
 
     @property
     def _is_connected(self):
@@ -536,7 +554,7 @@ class Connection:
         disconnecting. Races abound; but at least we know that we _think_ we're
         connected.
         """
-        return self._connection is not None
+        return self._connection is not None and self._channel is not None
 
     async def _connect_forever(self):
         """Connect -- and reconnect -- to RabbitMQ, forevermore."""
@@ -597,8 +615,8 @@ class Connection:
             # closes the connection. (It will close the connection when we call
             # `self.close()`.)
             logger.info("Monitoring for network interruptions")
-            gather_without_leaking(
-                self._connection.closing.wait(), self._channel.closing.wait()
+            await gather_without_leaking(
+                [self._connection.closing, self._channel.closing]
             )
 
         finally:
@@ -614,7 +632,7 @@ class Connection:
         * The channel is set to "publisher confirms"
         * `self.groups_exchange` is declared
         * A `self.group_name` exclusive queue is declared, with
-          `self.remote_capacity` and `self.prefetch_count` set.
+          `self.remote_capacity` and `self.local_capacity` set.
         * (If we're reconnecting) groups are bound on `self.groups_exchange`.
         * The channel is consuming with `self._handle_message`.
 
@@ -646,7 +664,7 @@ class Connection:
                 "x-message-ttl": int(self.expiry * 1000),
             },
         )
-        await channel.basic_qos(prefetch_count=self.prefetch_count)
+        await channel.basic_qos(prefetch_count=self.local_capacity)
 
         # Re-bind groups (after reconnect)
         async with self._groups_lock:
@@ -670,9 +688,7 @@ class Connection:
 
         return channel
 
-    async def _handle_message(
-        self, message: aiormq.types.DeliveredMessage
-    ) -> Awaitable[None]:
+    async def _handle_message(self, message: aiormq.types.DeliveredMessage) -> None:
         """Act upon a message from aiormq, then ack.
 
         Log errors, and never raise them.
@@ -681,12 +697,6 @@ class Connection:
             data = msgpack.unpackb(message.body)
             asgi_channel = data.get("__asgi_channel__")
             group = data.get("__asgi_group__")
-
-            logger.debug(
-                "Received message %s on ASGI channel/group %s",
-                message.delivery.delivery_tag,
-                asgi_channel or group,
-            )
 
             if asgi_channel and group:
                 raise RuntimeError("Message has both channel and group")
@@ -697,9 +707,15 @@ class Connection:
             # an Exception, but is is in Python <=3.7
             raise
         except Exception:
-            logger.warn("Ignoring message")  # will print a stack trace
+            logger.exception("Ignoring message")  # will print a stack trace
             await ack_message_if_we_can(message.channel, message.delivery.delivery_tag)
-            return
+            return None
+
+        logger.debug(
+            "Received message %s on ASGI channel/group %s",
+            message.delivery.delivery_tag,
+            asgi_channel or group,
+        )
 
         def begin_ack():
             nonlocal message
@@ -712,18 +728,13 @@ class Connection:
             data, self.loop.time() + self.local_expiry, begin_ack
         )
 
-        # `_handle_message()` is called in order because EventLoop.call_soon()
-        # queues messages in order. We want to make _all_ queueing ordered: one
-        # enqueue op can only begin when the ones before it finished. Luckily,
-        # asyncio.Lock() gives us this guarantee.
-        with self._handle_message_lock:  # enforce order
-            # Put the message. _incoming_messages will call begin_ack() when the
-            # messages are received; until then, we'll back-pressure. (If we
-            # delay all our acks, RabbitMQ will delay sending us more messages.)
-            if asgi_channel:
-                await self._incoming_messages.put_channel(asgi_channel, message_handle)
-            else:
-                await self._incoming_messages.put_group(group, message_handle)
+        # Put the message. _incoming_messages will call begin_ack() when the
+        # messages are received; until then, we'll back-pressure. (If we
+        # delay all our acks, RabbitMQ will delay sending us more messages.)
+        if asgi_channel:
+            self._incoming_messages.put_channel_nowait(asgi_channel, message_handle)
+        else:
+            self._incoming_messages.put_group_nowait(group, message_handle)
 
     @stall_until_connected_or_closed
     async def send(self, channel, asgi_channel, message):
@@ -737,19 +748,18 @@ class Connection:
             connection.send({'foo': 'bar'})
         """
         message = {**message, "__asgi_channel__": asgi_channel}
-        message = msgpack.packb(message, use_bin_type=True)
+        body = msgpack.packb(message, use_bin_type=True)
 
         queue_name = channel_to_queue_name(asgi_channel)
-        logger.debug("publish %r on %s", message, queue_name)
+        logger.debug("publish %r on %s", body, queue_name)
 
         # Publish with publisher_confirms=True. Assume the server is configured
         # with `overflow: reject-publish`, so we get a basic.nack if the queue
         # length is exceeded.
         try:
-            await channel.publish(message, "", queue_name)
-        except PublishError:
+            await channel.basic_publish(body, routing_key=queue_name)
+        except DeliveryError:
             raise ChannelFull()
-        logger.debug("ok")
 
     async def receive(self, asgi_channel):
         """Receive the first message that arrives on the channel.
@@ -805,13 +815,15 @@ class Connection:
     @stall_until_connected_or_closed
     async def group_send(self, channel, group, message):
         message = {**message, "__asgi_group__": group}
-        message = msgpack.packb(message, use_bin_type=True)
+        body = msgpack.packb(message, use_bin_type=True)
 
         logger.debug("group_send %r to %s", message, group)
 
         try:
-            await channel.publish(message, self.groups_exchange, routing_key=group)
-        except PublishError:
+            await channel.basic_publish(
+                body, exchange=self.groups_exchange, routing_key=group
+            )
+        except aiormq.exceptions.DeliveryError:
             # "Sending to a group never raises ChannelFull; instead, it must
             # silently drop the message if it is over capacity, as per ASGI’s
             # at-most-once delivery policy."
@@ -828,8 +840,16 @@ class Connection:
 
         # Wait for self._connect_forever() to exit. That'll mean all transient
         # variables (including self._protocol.worker) are cleaned up.
-        await self.worker
+        try:
+            await self.worker
+        except asyncio.CancelledError:
+            pass
 
         # close our queues. pending_puts' messages will be ignored, and the
         # tasks will be completed.
         self._incoming_messages.close()
+
+        try:
+            await self.expiry_worker
+        except asyncio.CancelledError:
+            pass

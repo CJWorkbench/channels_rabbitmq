@@ -1,3 +1,10 @@
+v2.0.0 - 2021-01-08
+~~~~~~~~~~~~~~~~~~~
+
+**Upgrade instructions from v1.x**
+
+* If you have configured ``prefetch_count``, delete it.
+
 v1.3.1 - 2020-12-29
 ~~~~~~~~~~~~~~~~~~~
 

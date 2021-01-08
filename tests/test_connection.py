@@ -20,7 +20,7 @@ SSL_CONTEXT.load_cert_chain(
 
 
 def ASYNC_TEST(fn):
-    return pytest.mark.timeout(8)(pytest.mark.asyncio(fn))
+    return pytest.mark.timeout(80)(pytest.mark.asyncio(fn))
 
 
 @pytest.fixture
@@ -49,15 +49,13 @@ async def connect():
 @ASYNC_TEST
 async def test_send_capacity(connect, caplog):
     """
-    Makes sure we get ChannelFull when our in-memory structure runs out of
-    memory.
+    Makes sure we get ChannelFull when the queue exceeds remote_capacity
     """
-    connection = connect("x", remote_capacity=1, local_capacity=1, prefetch_count=1)
-    await connection.send("x!y", {"type": "test.message1"})  # one queued+acked
-    await connection.send("x!y", {"type": "test.message2"})  # one unacked
-    await connection.send("x!y", {"type": "test.message3"})  # one ready
+    connection = connect("x", remote_capacity=1, local_capacity=1)
+    await connection.send("x!y", {"type": "test.message1"})  # one local, unacked
+    await connection.send("x!y", {"type": "test.message2"})  # one remote, queued
     with pytest.raises(ChannelFull):
-        await connection.send("x!y", {"type": "test.message4"})
+        await connection.send("x!y", {"type": "test.message3"})
     assert "Back-pressuring. Biggest queues: x!y (1)" in caplog.text
 
     # Test that even after error, the queue works as expected.
@@ -73,41 +71,33 @@ async def test_send_capacity(connect, caplog):
     # Send message5. We're sending and receiving on the same TCP connection, so
     # RabbitMQ is aware that message2 was acked by the time we send message5.
     # That means its queue isn't maxed out any more.
-    await connection.send("x!y", {"type": "test.message5"})  # one ready
+    await connection.send("x!y", {"type": "test.message4"})  # one ready
 
-    assert (await connection.receive("x!y"))["type"] == "test.message3"
-    assert (await connection.receive("x!y"))["type"] == "test.message5"
+    assert (await connection.receive("x!y"))["type"] == "test.message4"
 
 
 @ASYNC_TEST
 async def test_send_expire_remotely(connect):
     # expiry 80ms: long enough for us to receive all messages; short enough to
     # keep the test fast.
-    connection = connect(
-        "x", local_capacity=1, prefetch_count=1, expiry=0.08, local_expiry=2
-    )
-    await connection.send("x!y", {"type": "test.message1"})  # queued+acked
-    await connection.send("x!y", {"type": "test.message2"})  # unacked
+    connection = connect("x", local_capacity=1, expiry=0.08, local_expiry=2)
+    await connection.send("x!y", {"type": "test.message1"})  # one local, unacked
+    await connection.send("x!y", {"type": "test.message2"})  # remote, queued
+    await asyncio.sleep(0.09)  # test.message2 should expire
     await connection.send("x!y", {"type": "test.message3"})  # remote
-    await asyncio.sleep(0.09)  # test.message3 should expire
-    await connection.send("x!y", {"type": "test.message4"})  # remote
     assert (await connection.receive("x!y"))["type"] == "test.message1"
-    assert (await connection.receive("x!y"))["type"] == "test.message2"
-    # test.message3 should disappear entirely
-    assert (await connection.receive("x!y"))["type"] == "test.message4"
+    # test.message2 should disappear entirely
+    assert (await connection.receive("x!y"))["type"] == "test.message3"
 
 
 @ASYNC_TEST
 async def test_send_expire_locally(connect, caplog):
     # expiry 20ms: long enough that we can deliver one message but expire
     # another.
-    connection = connect("x", local_capacity=1, prefetch_count=1, local_expiry=0.02)
+    connection = connect("x", local_expiry=0.02)
     await connection.send("x!y", {"type": "test.message1"})
-    await asyncio.sleep(0.2)  # plenty of time; messages should expire
-    # [2019-06-16] we currently only check for expiry when we receive a
-    # message and local_capacity is full.
+    await asyncio.sleep(0.2)  # plenty of time; message.1 should expire
     await connection.send("x!y", {"type": "test.message2"})
-    await asyncio.sleep(0.01)
     assert (await connection.receive("x!y"))["type"] == "test.message2"
     assert "expired locally" in caplog.text
 
@@ -275,12 +265,12 @@ async def test_groups_channel_full(connect):
     """
     Tests that group_send ignores ChannelFull
     """
-    connection = connect("x", local_capacity=1, remote_capacity=1, prefetch_count=1)
+    connection = connect("x", local_capacity=1, remote_capacity=1)
     await connection.group_add("test-group", "x!1")
 
     # Message 1:
     # * server acks and control flow returns.
-    # * consumer receives message in background, adds it to queue, acks it.
+    # * consumer receives message in background, doesn't ack it.
     # After this, local_capacity is full.
     await connection.group_send("test-group", {"type": "message.1"})
     # Wait a few ms to make sure the message reaches the consumer
@@ -288,26 +278,17 @@ async def test_groups_channel_full(connect):
 
     # Message 2:
     # * server acks and control flow returns.
-    # * consumer receives message and stalls trying to add it to queue. No more
-    #   consuming happens: prefetch_count is full.
-    await connection.group_send("test-group", {"type": "message.2"})
-    # Wait a few ms to make sure the message reaches the consumer
-    await asyncio.sleep(0.01)
-
-    # Message 3:
-    # * server acks and control flow returns.
     # After this, remote_capacity is full.
-    await connection.group_send("test-group", {"type": "message.3"})
-    await connection.group_send("test-group", {"type": "message.4"})  # rejected
-    await connection.group_send("test-group", {"type": "message.5"})  # rejected
+    await connection.group_send("test-group", {"type": "message.2"})
 
-    assert (await connection.receive("x!1"))["type"] == "message.1"
-    assert (await connection.receive("x!1"))["type"] == "message.2"
-    assert (await connection.receive("x!1"))["type"] == "message.3"
+    await connection.group_send("test-group", {"type": "message.3"})  # rejected
+
+    assert (await connection.receive("x!1"))["type"] == "message.1"  # local
+    assert (await connection.receive("x!1"))["type"] == "message.2"  # remote
 
     # aaaand things are back to normal now that we're below capacity
-    await connection.group_send("test-group", {"type": "message.6"})
-    assert (await connection.receive("x!1"))["type"] == "message.6"
+    await connection.group_send("test-group", {"type": "message.4"})
+    assert (await connection.receive("x!1"))["type"] == "message.4"
 
 
 @ASYNC_TEST

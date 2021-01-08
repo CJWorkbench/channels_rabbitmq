@@ -11,10 +11,9 @@ license = "BSD"
 readme = "README.rst"
 
 [tool.poetry.dependencies]
-python = "~=3.6"
-aioamqp = "~=0.14.0"
-asgiref = "~=3.1"
-msgpack = ">=0.6.1,<2"
+python = "~=3.7"
+aiormq = "~=4.1.1"
+msgpack = "~=1.0"
 channels = ">=2.2,<4"
 importlib-metadata = {version = "^1.0", python = "<3.8"}
 
@@ -22,6 +21,7 @@ importlib-metadata = {version = "^1.0", python = "<3.8"}
 pytest = "~=6.1"
 pytest-asyncio = "~=0.14"
 pytest-timeout = "~= 1.4"
+asgiref = "~=3.1"
 
 [tool.isort]
 # Black compatibility
@@ -37,7 +37,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py36,py37,py38}-{pyflakes,black,isort,pytest}
+envlist = {py37,py38,py39}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
@@ -56,5 +56,5 @@ commands =
   pyflakes: pyflakes channels_rabbitmq tests
   black: black --check channels_rabbitmq tests
   isort: isort --check --diff channels_rabbitmq tests
-  pytest: poetry run pytest -v -s
+  pytest: poetry run pytest -v -s -k test_process_local_send_receive
 """
