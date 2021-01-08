@@ -170,7 +170,7 @@ class MultiQueue:
             for waiter in self._queue._getters:
                 if not waiter.done():
                     waiter.set_exception(
-                        ChannelClosed("<channels_rabbitmq.connection.Connection>", "")
+                        ConnectionClosed("<channels_rabbitmq.Connection.close>", "")
                     )
 
     def __init__(self, loop, capacity, local_expiry):
@@ -204,13 +204,17 @@ class MultiQueue:
         return deleted
 
     async def expire_locally_until_closed(self):
-        while True:
-            await asyncio.wait(
-                {self._nonempty.wait(), self._closed.wait()},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if self._closed.is_set():
-                return
+        while not self._closed.is_set():
+            closed_task = asyncio.create_task(self._closed.wait())
+
+            while self.n == 0:
+                nonempty_task = asyncio.create_task(self._nonempty.wait())
+                await asyncio.wait(
+                    {nonempty_task, closed_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._closed.is_set():
+                    return
 
             # Assume messages expire in FIFO order. Therefore, we know there's
             # no need to check for expiry until the first unhandled message
@@ -240,8 +244,6 @@ class MultiQueue:
     def _put_nowait(self, asgi_channel: str, message_handle: MessageHandle) -> None:
         if asgi_channel not in self._queues:
             self._queues[asgi_channel] = MultiQueue.ChannelQueue()
-        begin_ack = functools.partial(self._cleanup_message, message_handle)
-        message_handle = message_handle._replace(begin_ack=begin_ack)
         self._queues[asgi_channel].put_nowait(message_handle)
 
     def _put_messages(self, channel_messages: List[Tuple[str, MessageHandle]]) -> None:
@@ -263,6 +265,8 @@ class MultiQueue:
         This will eventually call `message_handle.begin_ack()`. It will call it
         promptly usually; it will call it slowly when back-pressure is better.
         """
+        begin_ack = functools.partial(self._cleanup_message, message_handle)
+        message_handle = message_handle._replace(begin_ack=begin_ack)
         self._put_messages([(asgi_channel, message_handle)])
 
     def put_group_nowait(self, group: str, message_handle: MessageHandle) -> None:
@@ -346,7 +350,7 @@ class MultiQueue:
     async def get(self, asgi_channel: str) -> Any:
         """Maybe wait for a `put_channel()` on `asgi_channel`; return its data."""
         if self._closed.is_set():
-            raise ChannelClosed
+            raise ConnectionClosed("channels_rabbitmq.Connection.close", "")
 
         try:
             if asgi_channel not in self._queues:
@@ -394,7 +398,7 @@ class MultiQueue:
         return ret
 
     def close(self):
-        """Nullify pending puts; raise ChannelClosed on pending gets."""
+        """Nullify pending puts; raise ConnectionClosed on pending gets."""
         if self._closed.is_set():
             return
         self._closed.set()
@@ -428,7 +432,7 @@ def stall_until_connected_or_closed(fn):
             await self._connect_event.wait()
 
         if self._is_closed:
-            raise ConnectionClosed
+            raise ConnectionClosed("channels_rabbitmq.Connection.close", "")
 
         return await fn(self, self._channel, *args, **kwargs)
 
@@ -838,18 +842,17 @@ class Connection:
         if self._connection is not None:
             await self._connection.close()
 
-        # Wait for self._connect_forever() to exit. That'll mean all transient
-        # variables (including self._protocol.worker) are cleaned up.
+        # Wait for self._connect_forever() to exit.
         try:
             await self.worker
         except asyncio.CancelledError:
             pass
+        finally:
+            # close our queues. pending_puts' messages will be ignored, and the
+            # tasks will be completed.
+            self._incoming_messages.close()
 
-        # close our queues. pending_puts' messages will be ignored, and the
-        # tasks will be completed.
-        self._incoming_messages.close()
-
-        try:
-            await self.expiry_worker
-        except asyncio.CancelledError:
-            pass
+            try:
+                await self.expiry_worker
+            except asyncio.CancelledError:
+                pass

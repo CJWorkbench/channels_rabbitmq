@@ -101,7 +101,6 @@ class RabbitmqChannelLayer(BaseChannelLayer):
             queue_name,
             local_capacity=self.local_capacity,
             remote_capacity=self.remote_capacity,
-            prefetch_count=self.prefetch_count,
             expiry=self.expiry,
             local_expiry=self.local_expiry,
             ssl_context=self.ssl_context,

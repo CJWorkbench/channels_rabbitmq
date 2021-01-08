@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from aiormq.exceptions import ChannelClosed
+from aiormq.exceptions import ConnectionClosed
 
 from channels.exceptions import ChannelFull
 from channels_rabbitmq.connection import Connection, ReconnectDelay
@@ -310,7 +310,7 @@ async def test_receive_after_disconnect(connect):
     connection = connect("x")
     await asyncio.sleep(0)  # start connecting (it happens in the background)
     await connection.close()
-    with pytest.raises(ChannelClosed):
+    with pytest.raises(ConnectionClosed):
         await connection.receive("x!1")
 
 
@@ -318,7 +318,7 @@ async def test_receive_after_disconnect(connect):
 async def test_receive_after_disconnect_before_connect_begins(connect):
     connection = connect("x")
     await connection.close()
-    with pytest.raises(ChannelClosed):
+    with pytest.raises(ConnectionClosed):
         await connection.receive("x!1")
 
 
@@ -360,11 +360,11 @@ async def test_disconnect_at_same_time_as_everything(connect):
     )
 
     assert close_r is None
-    assert isinstance(send_r, ChannelClosed)
-    assert isinstance(group_add_r, ChannelClosed)
-    assert isinstance(group_send_r, ChannelClosed)
+    assert isinstance(send_r, ConnectionClosed)
+    assert isinstance(group_add_r, ConnectionClosed)
+    assert isinstance(group_send_r, ConnectionClosed)
     assert group_discard_r is None
-    assert isinstance(receive_r, ChannelClosed)
+    assert isinstance(receive_r, ConnectionClosed)
 
 
 @ASYNC_TEST
