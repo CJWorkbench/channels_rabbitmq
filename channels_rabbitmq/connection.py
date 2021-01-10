@@ -1,7 +1,7 @@
 import asyncio
 import functools
 import logging
-from typing import Any, Awaitable, Callable, List, NamedTuple, Tuple
+from typing import Any, Callable, List, NamedTuple, Tuple
 
 import aiormq
 import msgpack

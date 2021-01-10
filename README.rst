@@ -3,6 +3,12 @@ channels_rabbitmq
 
 A Django Channels channel layer that uses RabbitMQ as its backing store.
 
+Does not support `Worker and Background Tasks
+<https://channels.readthedocs.io/en/stable/topics/worker.html>`_.
+(See `Rationale
+<https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070>`_
+and use RabbitMQ directly for job queues.)
+
 Installation
 ------------
 
