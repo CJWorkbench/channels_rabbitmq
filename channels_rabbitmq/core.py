@@ -10,9 +10,26 @@ from channels.layers import BaseChannelLayer
 from .connection import Connection
 
 
+def _assert_channel_is_reply_channel(channel_name: str) -> None:
+    if "!" not in channel_name:
+        raise RuntimeError(
+            """
+***
+You are trying to use "Normal Channels", as per
+https://channels.readthedocs.io/en/1.x/concepts.html#channel-types.
+
+channels_rabbitmq does not support Normal Channels. See
+https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070
+for an explanation. You can build a pull request if you really want
+this; but we heartily recommend you implement your work queue with
+a different RabbitMQ client, such as aiormq. Your service will be
+simpler and it will scale better.
+***"""
+        )
+
+
 class RabbitmqChannelLayer(BaseChannelLayer):
-    """
-    RabbitMQ channel layer.
+    """RabbitMQ channel layer.
 
     It routes all messages into a remote RabbitMQ server.
 
@@ -85,8 +102,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
     extensions = ["groups"]
 
     def _create_connection(self, loop):
-        """
-        Start a new connection on the given event loop.
+        """Start a new connection on the given event loop.
 
         Wrap the event loop's close() with a connection.close() call.
         """
@@ -150,21 +166,18 @@ class RabbitmqChannelLayer(BaseChannelLayer):
                 return self._connections[loop]
 
     async def send(self, channel, message):
-        """
-        Send a message onto a (general or specific) channel.
-        """
+        """Send a message onto a (general or specific) channel."""
         assert isinstance(message, dict), "message is not a dict"
         assert self.valid_channel_name(channel), "Channel name not valid"
         assert "__asgi_channel__" not in message
         assert "__asgi_group__" not in message
-        assert "!" in channel
+        _assert_channel_is_reply_channel(channel)
 
         connection = self._get_connection_for_loop()
         await connection.send(channel, message)
 
     async def receive(self, channel):
-        """
-        Receive the first message that arrives on the channel.
+        """Receive the first message that arrives on the channel.
 
         If more than one coroutine waits on the same channel, only one waiter
         will receive the message when it arrives.
@@ -172,14 +185,13 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         # Make sure the channel name is valid then get the non-local part
         # and thus its index
         assert self.valid_channel_name(channel)
-        assert "!" in channel
+        _assert_channel_is_reply_channel(channel)
 
         connection = self._get_connection_for_loop()
         return await connection.receive(channel)
 
     async def new_channel(self, prefix=""):
-        """
-        Create a new channel name that can be used by something in our
+        """Create a new channel name that can be used by something in our
         process as a specific channel.
         """
         connection = self._get_connection_for_loop()
@@ -194,8 +206,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         )
 
     async def group_add(self, group, channel):
-        """
-        Add the channel name to a group.
+        """Add the channel name to a group.
 
         Spec deviation: `channel` must have been created on the same event loop
         as the RabbitMQ connection. In other words: you can't subscribe someone
@@ -208,8 +219,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         await connection.group_add(group, channel)
 
     async def group_discard(self, group, channel):
-        """
-        Remove the channel from the named group if it is in the group;
+        """Remove the channel from the named group if it is in the group;
         does nothing otherwise (does not error)
 
         Spec deviation: `channel` must have been created on the same event loop
@@ -223,9 +233,7 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         await connection.group_discard(group, channel)
 
     async def group_send(self, group, message):
-        """
-        Send a message to the entire group.
-        """
+        """Send a message to the entire group."""
         assert isinstance(message, dict), "message is not a dict"
         assert self.valid_group_name(group), "Group name not valid"
         assert "__asgi_channel__" not in message
