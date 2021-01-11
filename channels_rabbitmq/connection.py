@@ -1,7 +1,7 @@
 import asyncio
 import functools
 import logging
-from typing import Any, Awaitable, Callable, List, NamedTuple, Tuple
+from typing import Any, Callable, List, NamedTuple, Tuple
 
 import aiormq
 import msgpack
@@ -75,7 +75,7 @@ class MessageHandle(NamedTuple):
     https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.loop.call_at
     """
 
-    begin_ack: Callable[[], None]
+    mark_delivered: Callable[[], None]
     """Callback for when the message is expired or delivered.
 
     This will be called _eventually_, exactly once, in these cases:
@@ -141,18 +141,26 @@ class MultiQueue:
         def put_nowait(self, message_handle) -> None:
             self._queue.put_nowait(message_handle)
 
-        async def get(self) -> MessageHandle:
+        async def get(self) -> Any:
             """Wait for a message to become available, then return it."""
-            return await self._queue.get()
+            message_handle = await self._queue.get()
+            message_handle.mark_delivered()
+            return message_handle.data
 
-        def remove_expired(self, now: float) -> List[MessageHandle]:
-            """Remove and return MessageHandles we won't use."""
-            ret = []
+        def remove_expired(self, now: float) -> bool:
+            """Remove (and mark_delivered()) MessageHandles we won't use.
+
+            Return True if anything was deleted.
+            """
+            retval = False
             # We need to peek: self._queue is an asyncio.Queue, and
             # self._queue._queue is the collections.deque() _inside_ it.
             while not self._queue.empty() and self._queue._queue[0].expires <= now:
-                ret.append(self._queue._queue.popleft())
-            return ret
+                message_handle = self._queue._queue.popleft()
+                message_handle.mark_delivered()
+                retval = True
+
+            return retval
 
         @property
         def soonest_expiry(self) -> float:
@@ -194,9 +202,8 @@ class MultiQueue:
         deleted = False
         channels_to_delete = []
         for asgi_channel, queue in self._queues.items():
-            for message_handle in queue.remove_expired(now):
+            if queue.remove_expired(now):
                 deleted = True
-                message_handle.begin_ack()
             if queue.unused():
                 channels_to_delete.append(asgi_channel)
         for asgi_channel in channels_to_delete:
@@ -241,38 +248,59 @@ class MultiQueue:
             if dropped:
                 self._log_local_expiry_debounced(now)
 
-    def _put_nowait(self, asgi_channel: str, message_handle: MessageHandle) -> None:
-        if asgi_channel not in self._queues:
-            self._queues[asgi_channel] = MultiQueue.ChannelQueue()
-        self._queues[asgi_channel].put_nowait(message_handle)
-
-    def _put_messages(self, channel_messages: List[Tuple[str, MessageHandle]]) -> None:
-        for asgi_channel, message_handle in channel_messages:
-            self._put_nowait(asgi_channel, message_handle)
-
+    def _increase_n(self):
+        assert self.n < self.capacity
         self.n += 1  # decreased in self._cleanup_message()
-        if self.n >= self.capacity:
+        if self.n == self.capacity:
             now = self.loop.time()
             self._log_backpressure_debounced(now)
-        if self.n > 0:
-            self._nonempty.set()
+        self._nonempty.set()
+
+    def _decrease_n(self) -> None:
+        self.n -= 1
+        if self.n == 0:
+            self._nonempty.clear()
+
+    def _put_message(
+        self, message_handle: MessageHandle, asgi_channels: List[str]
+    ) -> None:
+        if len(asgi_channels) == 0:
+            message_handle.mark_delivered()
+            return
+
+        n_undelivered = len(asgi_channels)
+
+        def mark_delivered() -> None:
+            nonlocal n_undelivered
+            assert n_undelivered >= 1
+            n_undelivered -= 1
+            if n_undelivered == 0:
+                self._decrease_n()
+                message_handle.mark_delivered()
+
+        queued_message_handle = message_handle._replace(mark_delivered=mark_delivered)
+
+        for asgi_channel in asgi_channels:
+            if asgi_channel not in self._queues:
+                self._queues[asgi_channel] = MultiQueue.ChannelQueue()
+            self._queues[asgi_channel].put_nowait(queued_message_handle)
+
+        self._increase_n()
 
     def put_channel_nowait(
         self, asgi_channel: str, message_handle: MessageHandle
     ) -> None:
         """Queue a message.
 
-        This will eventually call `message_handle.begin_ack()`. It will call it
-        promptly usually; it will call it slowly when back-pressure is better.
+        This will call `message_handle.mark_delivered()` when the message is
+        either delivered or expired.
         """
-        begin_ack = functools.partial(self._cleanup_message, message_handle)
-        message_handle = message_handle._replace(begin_ack=begin_ack)
-        self._put_messages([(asgi_channel, message_handle)])
+        self._put_message(message_handle, [asgi_channel])
 
     def put_group_nowait(self, group: str, message_handle: MessageHandle) -> None:
         """Queue a message into all channels in `group` (selected atomically).
 
-        This will call `message_handle.begin_ack()` once, after _all_ deliveries
+        This will call `message_handle.mark_delivered()` once, after _all_ deliveries
         have succeeded or timed out.
 
         The recipient channels are chosen at call time, though messages aren't
@@ -280,28 +308,8 @@ class MultiQueue:
         message after it called `group_discard()` -- as long as the
         `put_group()` happened before the `group_discard()`.
         """
-        if group not in self.local_groups:
-            return  # don't create group
-
-        asgi_channels = self.local_groups[group]
-
-        n_acks_left = len(asgi_channels)
-
-        def countdown_to_begin_ack():
-            nonlocal self, n_acks_left, message_handle
-            n_acks_left -= 1
-            if n_acks_left == 0:
-                self._cleanup_message(message_handle)
-
-        child_handle = message_handle._replace(begin_ack=countdown_to_begin_ack)
-        messages = [(asgi_channel, child_handle) for asgi_channel in asgi_channels]
-        self._put_messages(messages)
-
-    def _cleanup_message(self, message_handle: MessageHandle) -> None:
-        self.n -= 1
-        if self.n == 0:
-            self._nonempty.clear()
-        message_handle.begin_ack()
+        asgi_channels = self.local_groups.get(group, [])
+        self._put_message(message_handle, asgi_channels)
 
     def _build_big_queues_str(self) -> str:
         blockers = [(name, len(q._queue._queue)) for name, q in self._queues.items()]
@@ -352,18 +360,17 @@ class MultiQueue:
         if self._closed.is_set():
             raise ConnectionClosed("channels_rabbitmq.Connection.close", "")
 
+        if asgi_channel not in self._queues:
+            self._queues[asgi_channel] = MultiQueue.ChannelQueue()
+
         try:
-            if asgi_channel not in self._queues:
-                self._queues[asgi_channel] = MultiQueue.ChannelQueue()
-            item = await self._queues[asgi_channel].get()
+            return await self._queues[asgi_channel].get()
         finally:  # Even if there's an asyncio.CancelledError
             if (
                 asgi_channel in self._queues  # it may have been deleted in await?
                 and self._queues[asgi_channel].unused()
             ):
                 del self._queues[asgi_channel]
-        item.begin_ack()
-        return item.data
 
     def group_add(self, group, asgi_channel):
         if self._closed.is_set():

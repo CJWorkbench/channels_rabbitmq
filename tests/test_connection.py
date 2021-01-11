@@ -94,7 +94,10 @@ async def test_send_expire_remotely(connect):
 async def test_send_expire_locally(connect, caplog):
     # expiry 20ms: long enough that we can deliver one message but expire
     # another.
-    connection = connect("x", local_expiry=0.02)
+    #
+    # local_capacity=1: when we expire, we must ack so RabbitMQ can send
+    # another message.
+    connection = connect("x", local_expiry=0.02, local_capacity=1)
     await connection.send("x!y", {"type": "test.message1"})
     await asyncio.sleep(0.2)  # plenty of time; message.1 should expire
     await connection.send("x!y", {"type": "test.message2"})
@@ -158,9 +161,6 @@ async def test_reject_bad_channel(connect):
 
 @ASYNC_TEST
 async def test_groups_local(connect):
-    """
-    Tests basic group operation.
-    """
     connection = connect("x")
     await connection.group_add("test-group", "x!1")
     await connection.group_add("test-group", "x!2")
@@ -179,9 +179,6 @@ async def test_groups_local(connect):
 
 @ASYNC_TEST
 async def test_groups_discard(connect):
-    """
-    Tests basic group operation.
-    """
     connection = connect("x")
     await connection.group_add("test-group", "x!1")
     await connection.group_discard("test-group", "x!1")
@@ -196,9 +193,6 @@ async def test_groups_discard(connect):
 
 @ASYNC_TEST
 async def test_group_discard_when_not_connected(connect):
-    """
-    Tests basic group operation.
-    """
     connection = connect("x")
 
     await connection.group_discard("test-group", "x!1")
@@ -209,9 +203,6 @@ async def test_group_discard_when_not_connected(connect):
 
 @ASYNC_TEST
 async def test_groups_remote(connect):
-    """
-    Tests basic group operation.
-    """
     connection1 = connect("x")
     connection2 = connect("y")
 
@@ -294,7 +285,7 @@ async def test_groups_channel_full(connect):
 @ASYNC_TEST
 async def test_groups_no_such_group(connect):
     """
-    Tests that group_send does nothing if there is no such group
+    Tests that group_send does nothing if there is no such group.
     """
     connection = connect("x")
     await connection.group_send("my-group", {"type": "message.1"})
@@ -303,6 +294,30 @@ async def test_groups_no_such_group(connect):
     await connection.group_add("my-group", "x!1")
     await connection.group_send("my-group", {"type": "message.2"})
     assert (await connection.receive("x!1"))["type"] == "message.2"
+
+
+@ASYNC_TEST
+async def test_groups_ack_group_that_only_exists_remotely(connect):
+    """
+    Tests that we ack when receiving a message to no group.
+
+    If Bob unsubscribes from a group but Alice has already sent a message to it,
+    RabbitMQ will deliver the message to Bob's Connection even though Bob isn't
+    subscribed. In that case, we need to ack the message -- otherwise, we leak
+    a message.
+    """
+    # Set local_capacity=1 to test that the message will be acked. If it isn't
+    # acked, message.2 will stall on the RabbitMQ side.
+    connection1 = connect("bob", local_capacity=1)
+    connection2 = connect("alice", local_capacity=1)
+
+    await connection1.group_add("my-group", "bob!1")
+    # white-box testing: simulate a half-completed group_discard()
+    connection1._incoming_messages.group_discard("my-group", "bob!1")
+
+    await connection2.group_send("my-group", {"type": "message.1"})  # no recipient
+    await connection2.send("bob!1", {"type": "message.2"})
+    assert (await connection1.receive("bob!1"))["type"] == "message.2"
 
 
 @ASYNC_TEST
