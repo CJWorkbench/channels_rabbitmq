@@ -1,11 +1,12 @@
 v2.0.0 - 2021-01-08
 ~~~~~~~~~~~~~~~~~~~
 
-* ``local_capacity`` now counts 1 = one message. (Before, it was 1 = one client
-  awaiting the message).
-* Deleted ``prefetch_count``. It was confusing when combined with
+* ``local_capacity`` now counts messages. (Before, it was counting how many
+  ``.get()`` calls were pending.)
+* ``prefetch_count`` no longer exists. It was confusing when combined with
   ``local_capacity``.
-* Upgraded to `aiormq <https://github.com/mosquito/aiormq>`_.
+* Switched to `aiormq <https://github.com/mosquito/aiormq>`_, which is
+  better-maintained.
 * Upgraded `msgpack <https://github.com/msgpack/msgpack-python>`_ to v1.
 
 **Upgrade instructions from v1.x**
