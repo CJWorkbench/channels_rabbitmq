@@ -50,15 +50,6 @@ async def gather_without_leaking(tasks):
         raise
 
 
-def _wakeup_next(waiters):
-    """Wake up the next waiter (if any) that isn't cancelled."""
-    while waiters:
-        waiter = waiters.popleft()
-        if not waiter.done():
-            waiter.set_result(None)
-            break
-
-
 class MessageHandle(NamedTuple):
     """A message for queueing locally.
 
@@ -164,14 +155,8 @@ class MultiQueue:
 
         @property
         def soonest_expiry(self) -> float:
-            """The earliest "expires" of all queued messages.
-
-            Raise ValueError if empty.
-            """
-            try:
-                return self._queue._queue[0].expires
-            except IndexError:
-                raise ValueError("Queue is empty") from None
+            """The earliest "expires" of all queued messages."""
+            return self._queue._queue[0].expires
 
         def close(self) -> None:
             """Raise ChannelClosed on all readers."""
@@ -595,14 +580,6 @@ class Connection:
                 # an Exception, but is is in Python <=3.7
                 raise  # and crash
 
-    def _notify_connect_event(self):
-        """Notify anybody waiting for `self._connect_event` and reset it."""
-        old_event = self._connect_event
-        if not old_event.is_set():
-            old_event.set()
-        self._connect_event = asyncio.Event()
-        # After we return, everyone waiting for `_connect_event` will wake up.
-
     async def _connect_and_run(self):
         logger.info("Channels connecting to RabbitMQ at %s", self.host)
 
@@ -614,13 +591,9 @@ class Connection:
         # self._connection = aiormq.Connection(self.host, context=self.ssl_context)
         self._connection = aiormq.Connection(self.host)
         try:
-            logger.warning("INIT")
             await self._connection.connect()
-            logger.warning("CONNECTED")
             self._channel = await self._setup_channel_during_connect(self._connection)
-            logger.warning("GOT CHANNEL")
             self._connect_event.set()
-            logger.warning("INITIALIZED")
 
             # And now run until eternity. Or, realistically, until RabbitMQ
             # closes the connection. (It will close the connection when we call

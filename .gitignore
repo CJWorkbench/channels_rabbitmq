@@ -10,3 +10,4 @@ ssl/*.key
 ssl/*.srl
 .tox/
 poetry.lock
+.coverage
