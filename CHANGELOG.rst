@@ -12,6 +12,8 @@ v2.0.0 - 2021-01-08
 **Upgrade instructions from v1.x**
 
 * If you have configured ``prefetch_count``, delete it.
+* Upgrade to **Python 3.7 or higher**.
+* Upgrade to **Django-Channels 3.0 or higher**.
 
 v1.3.1 - 2020-12-29
 ~~~~~~~~~~~~~~~~~~~
