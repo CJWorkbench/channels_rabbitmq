@@ -1,3 +1,20 @@
+v2.0.0 - 2021-01-08
+~~~~~~~~~~~~~~~~~~~
+
+* ``local_capacity`` now counts messages. (Before, it was counting how many
+  ``.get()`` calls were pending.)
+* ``prefetch_count`` no longer exists. It was confusing when combined with
+  ``local_capacity``.
+* Switched to `aiormq <https://github.com/mosquito/aiormq>`_, which is
+  better-maintained.
+* Upgraded `msgpack <https://github.com/msgpack/msgpack-python>`_ to v1.
+
+**Upgrade instructions from v1.x**
+
+* If you have configured ``prefetch_count``, delete it.
+* Upgrade to **Python 3.7 or higher**.
+* Upgrade to **Django-Channels 3.0 or higher**.
+
 v1.3.1 - 2020-12-29
 ~~~~~~~~~~~~~~~~~~~
 

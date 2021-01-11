@@ -11,17 +11,18 @@ license = "BSD"
 readme = "README.rst"
 
 [tool.poetry.dependencies]
-python = "~=3.6"
-aioamqp = "~=0.14.0"
-asgiref = "~=3.1"
-msgpack = ">=0.6.1,<2"
-channels = ">=2.2,<4"
+aiormq = "~=4.1.1"
+channels = "~=3.0"
 importlib-metadata = {version = "^1.0", python = "<3.8"}
+msgpack = "~=1.0"
+python = "~=3.7"
 
 [tool.poetry.dev-dependencies]
 pytest = "~=6.1"
 pytest-asyncio = "~=0.14"
+pytest-cov = "~= 2.10"
 pytest-timeout = "~= 1.4"
+asgiref = "~=3.1"
 
 [tool.isort]
 # Black compatibility
@@ -37,7 +38,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py36,py37,py38}-{pyflakes,black,isort,pytest}
+envlist = {py37,py38,py39}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
@@ -45,16 +46,17 @@ ignore = E123,E128,E266,E402,W503,E731,W601
 max-line-length = 88
 
 [testenv]
-whitelist_externals: poetry
+skip_install = true
 deps =
   pyflakes: pyflakes>=2.2
   black: black
   isort: isort
+  pytest: poetry
 commands_pre =
   pytest: poetry install -v
 commands =
   pyflakes: pyflakes channels_rabbitmq tests
   black: black --check channels_rabbitmq tests
   isort: isort --check --diff channels_rabbitmq tests
-  pytest: poetry run pytest -v -s
+  pytest: poetry run pytest --cov=channels_rabbitmq --cov-report term-missing -v
 """

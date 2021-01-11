@@ -3,6 +3,12 @@ channels_rabbitmq
 
 A Django Channels channel layer that uses RabbitMQ as its backing store.
 
+Does not support `Worker and Background Tasks
+<https://channels.readthedocs.io/en/stable/topics/worker.html>`_.
+(See `Rationale
+<https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070>`_
+and use RabbitMQ directly for job queues.)
+
 Installation
 ------------
 
@@ -47,9 +53,11 @@ have peaky traffic you want to backlog until you get to it.
 ``local_capacity``
 ~~~~~~~~~~~~~~~~~~
 
-Number of messages queued in memory. Defaults to ``100``. (A message sent to
-a group with two channels counts as two messages.) When ``local_capacity``
+Number of incoming messages queued in memory. Defaults to ``100``. (A message
+sent to a group with two channels counts as one message.) When ``local_capacity``
 messages are queued, the message backlog will grow on RabbitMQ.
+
+(This controls the ``prefetch_count`` on the RabbitMQ queue.)
 
 ``local_expiry``
 ~~~~~~~~~~~~~~~~
@@ -64,6 +72,10 @@ messages are being sent to a channel that does not exist. (Perhaps a missing
 channel was implied by ``group_add()``, and a matching ``group_discard()``
 was never called.)
 
+If ``local_expiry < expiry``, then you can end up ignoring (and logging)
+messages locally while they still exist in the RabbitMQ queue. These messages
+will be acked, so RabbitMQ will behave as though they were delivered.
+
 ``remote_capacity``
 ~~~~~~~~~~~~~~~~~~~
 
@@ -72,16 +84,6 @@ Number of messages stored on RabbitMQ for each client. Defaults to ``100``.
 as two messages.) When ``remote_capacity`` messages are queued in RabbitMQ,
 the channel will refuse new messages. Calls from any client to ``send()`` or
 ``group_send()`` to the at-capacity client will raise ``ChannelFull``.
-
-``prefetch_count``
-~~~~~~~~~~~~~~~~~~
-
-Number of messages to read from RabbitMQ at a time. Defaults to ``10``. This
-makes ``local_capacity`` a bit of a "loose" setting: if messages are queued
-rapidly enough, the client may request ``prefetch_count`` messages even if it
-already has ``local_capacity - 1`` messages in memory. Higher settings
-accelerate throughput a little bit; lower settings help adhere to
-``local_capacity`` more rigorously.
 
 ``ssl_context``
 ~~~~~~~~~~~~~~~
@@ -137,8 +139,7 @@ Once a connection has been created, it pollutes the event loop so that
 ``async_to_sync()`` will destroy the connection if it was created within
 ``async_to_sync()``. Each connection starts a background async loop that pulls
 messages from RabbitMQ and routes them to receiver queues; each ``receive()``
-queries receiver queues. Empty queues are deleted. TODO delete queues that
-only contain expired messages, so we don't leak when sending to dead channels.
+queries receiver queues. Empty queues with no connections are deleted.
 
 Deviations from the Channel Layer Specification
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -191,7 +192,7 @@ differences:
 Dependencies
 ------------
 
-You'll need Python 3.6+ (lower hasn't been tested) and a RabbitMQ server.
+You'll need Python 3.7+ and a RabbitMQ server.
 
 If you have Docker, here's how to start a development server::
 

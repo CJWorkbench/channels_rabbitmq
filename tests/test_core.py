@@ -92,6 +92,15 @@ async def test_reject_bad_channel():
 
 
 @ASYNC_TEST
+async def test_reject_send_normal_channel():
+    layer = RabbitmqChannelLayer(host=HOST)
+    with pytest.raises(
+        RuntimeError, match="channels_rabbitmq does not support Normal Channels"
+    ):
+        await layer.send("jobs", {"not": "supported"})
+
+
+@ASYNC_TEST
 async def test_reject_bad_client_prefix():
     """
     Makes sure receiving on a non-prefixed local channel is not allowed.
@@ -99,6 +108,15 @@ async def test_reject_bad_client_prefix():
     layer = RabbitmqChannelLayer(host=HOST)
     with pytest.raises(AssertionError):
         await layer.receive("not-client-prefix!local_part")
+
+
+@ASYNC_TEST
+async def test_reject_receive_normal_channel():
+    layer = RabbitmqChannelLayer(host=HOST)
+    with pytest.raises(
+        RuntimeError, match="channels_rabbitmq does not support Normal Channels"
+    ):
+        await layer.receive("jobs")
 
 
 @ASYNC_TEST
