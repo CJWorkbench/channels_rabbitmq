@@ -11,11 +11,10 @@ license = "BSD"
 readme = "README.rst"
 
 [tool.poetry.dependencies]
-aiormq = "~=4.1.1"
+carehare = "~=0.0.6"
 channels = "~=3.0"
-importlib-metadata = {version = "^1.0", python = "<3.8"}
 msgpack = "~=1.0"
-python = "~=3.7"
+python = "~=3.8"
 
 [tool.poetry.dev-dependencies]
 pytest = "~=6.1"
@@ -31,14 +30,13 @@ include_trailing_comma = true
 force_grid_wrap = 0
 use_parentheses = true
 line_length = 88
-known_first_party = ["channels", "asgiref", "channels_rabbitmq"]
 
 [tool.tox]
 legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py37,py38,py39}-{pyflakes,black,isort,pytest}
+envlist = {py38,py39}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*

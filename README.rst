@@ -7,7 +7,9 @@ Does not support `Worker and Background Tasks
 <https://channels.readthedocs.io/en/stable/topics/worker.html>`_.
 (See `Rationale
 <https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070>`_
-and use RabbitMQ directly for job queues.)
+and use ``await get_channel_layer().current_connection`` to send to job queues.)
+
+Works with Python 3.8 or 3.9.
 
 Installation
 ------------
@@ -114,6 +116,34 @@ are transmitted in cleartext.
 Global direct exchange name used by channels to exchange group messages.
 Defaults to ``"groups"``. See also `Design decisions`_.
 
+Accessing Carehare
+------------------
+
+We use `carehare
+<https://github.com/CJWorkbench/carehare>`_ for its thorough handling of errors.
+
+Django Channels' specification does not account for "connecting" and
+"disconnecting". This layer does its best by constantly reconnecting, forever.
+
+Call ``await get_channel_layer().current_connection`` to access an open Carehare
+connection. This lets you use job queues without "Worker and Background Tasks".
+Like this::
+
+    # raise asyncio.CancelledError on failure
+    connection = await get_channel_layer().carehare_connection
+
+    # raise carehare.ConnectionClosed or carehare.ChannelClosed on error
+    await connection.publish(b"task", routing_key="job_queue")
+
+(The Carehare documentation explains how to build workers.)
+
+A note on errors: a "connected" connection isn't guaranteed to *stay* connected
+throughout every publish. It was merely connected *at some point in the past*.
+When a disconnect occurs, all pending operations on that connection will raise
+``carehare.ConnectionClosed``. This channel layer will log the error, and
+``get_channel_layer().carehare_connection`` will point to a new Future. (This
+error+reconnect is *guaranteed to happen* in production.)
+
 Design decisions
 ----------------
 
@@ -123,17 +153,14 @@ websocket connections are open. For each message being sent, the client-side
 layer determines the RabbitMQ queue name and uses it as the routing key.
 
 Groups are implemented using a single, global RabbitMQ direct exchange called
-"groups" by default. To send a message to a group, the layer sends the message to the
-"groups" exchange with the group name as the routing key. The client binds and
-unbinds during ``group_add()`` and ``group_remove()`` to ensure messages for
-any of its groups will reach it. See also the `groups_exchange`_ option.
+"groups" by default. To send a message to a group, the layer sends the message
+to the "groups" exchange with the group name as the routing key. The client
+binds and unbinds during ``group_add()`` and ``group_remove()`` to ensure
+messages for any of its groups will reach it. See also the `groups_exchange`_
+option.
 
 RabbitMQ queues are ``exclusive``: when a client disconnects (through close or
 crash), RabbitMQ will delete the queue and unbind the groups.
-
-Django Channels' specification does not account for "connecting" and
-"disconnecting", so this layer is always connected. It will reconnect forever
-in the event loop's background, logging warnings each time the connect fails.
 
 Once a connection has been created, it pollutes the event loop so that
 ``async_to_sync()`` will destroy the connection if it was created within
@@ -172,27 +199,13 @@ differences:
   are job queues. In most projects, "normal channel" readers are worker
   processes, ideally divorced from Websockets and Django.
 
-  You are welcome to submit a ``channels_rabbitmq`` pull request to support this
-  under-specified aspect of the Channel Layer Specification. But why reinvent
-  the wheel? There are thousands of job-queue implementations out there already.
-  Django Channels is a bad fit, because it is tuned for Websockets.
-
-  If you want an async, RabbitMQ-based job queue, investigate `aiormq
-  <https://github.com/mosquito/aiormq>`_ and `aioamqp
-  <https://github.com/polyconseil/aioamqp>`_. You can even send your jobs
-  to a separate RabbitMQ server or virtual host.
-
-  Currently, this project's strategy is to wait for `Celery 5.0.0
-  <https://github.com/celery/celery/milestone/7>`_, evaluate it, and then
-  recommend an alternative to "normal channels." (With Celery 4, it's
-  inefficient for workers to send messages to the Django Channels layer, because
-  they need to launch a new event loop and RabbitMQ connection per task. You can
-  use Celery 4, but it's hard to recommend it. Celery 5 may fix this.)
+  If you want an async, RabbitMQ-based job queue, investigate `carehare
+  <https://github.com/CJWorkbench/carehare>`_.
 
 Dependencies
 ------------
 
-You'll need Python 3.7+ and a RabbitMQ server.
+You'll need Python 3.8+ and a RabbitMQ server.
 
 If you have Docker, here's how to start a development server::
 
@@ -230,7 +243,7 @@ First, start a development RabbitMQ server::
          -e RABBITMQ_SSL_KEYFILE=/ssl/server.key \
          -e RABBITMQ_SSL_VERIFY=verify_peer \
          -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
-         rabbitmq:3.7.8-management-alpine
+         rabbitmq:3.8.11-management-alpine
 
 Now take on the development cycle:
 

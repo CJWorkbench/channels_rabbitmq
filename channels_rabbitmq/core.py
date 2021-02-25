@@ -1,13 +1,69 @@
+from __future__ import annotations
+
 import asyncio
+import logging
 import random
 import string
-import threading
-import types
 import warnings
+from typing import Iterable, Optional
 
+import carehare
+from channels.exceptions import ChannelFull, StopConsumer
 from channels.layers import BaseChannelLayer
 
-from .connection import Connection
+from .multiqueue import MultiQueue
+from .reader import consume_into_multi_queue_until_connection_close
+from .util import (
+    ChannelRecipient,
+    GroupRecipient,
+    gather_without_leaking,
+    serialize_message,
+)
+
+logger = logging.getLogger(__name__)
+
+ReconnectDelay = 1.0  # seconds
+
+
+async def _setup_connection(
+    *,
+    connection: carehare.Connection,
+    queue_name: str,
+    remote_capacity: Optional[int],
+    expiry: Optional[int],
+    groups_exchange: str
+) -> None:
+    # Declare "groups" exchange. It may persist; spurious declarations
+    # (such as on reconnect) are harmless.
+    await connection.exchange_declare(groups_exchange, exchange_type="direct")
+
+    arguments = {}
+    if remote_capacity is not None:
+        arguments["x-max-length"] = remote_capacity
+        arguments["x-overflow"] = "reject-publish"
+    if expiry is not None:
+        arguments["x-message-ttl"] = int(expiry * 1000)
+    # This is an exclusive queue, because we want it to disappear when we
+    # shut down. (Otherwise we'd leak queues every deploy.) And since an
+    # exclusive queue disappears when we aren't connected, there's no way
+    # to preserve every message across connects. That's okay -- disconnect
+    # means one or two lost messages and nothing more.
+    await connection.queue_declare(queue_name, exclusive=True, arguments=arguments)
+
+
+async def _setup_subscriptions(
+    *,
+    connection: carehare.Connection,
+    queue_name: str,
+    groups_exchange: str,
+    groups: Iterable[str]
+) -> None:
+    await gather_without_leaking(
+        connection.queue_bind(
+            queue_name=queue_name, exchange_name=groups_exchange, routing_key=group
+        )
+        for group in groups
+    )
 
 
 def _assert_channel_is_reply_channel(channel_name: str) -> None:
@@ -21,11 +77,14 @@ https://channels.readthedocs.io/en/1.x/concepts.html#channel-types.
 channels_rabbitmq does not support Normal Channels. See
 https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070
 for an explanation. You can build a pull request if you really want
-this; but we heartily recommend you implement your work queue with
-a different RabbitMQ client, such as aiormq. Your service will be
-simpler and it will scale better.
+this; but we heartily recommend you implement your work queue using
+carehare directly. Your service will be simpler and it will scale better.
 ***"""
         )
+
+
+def _random_letters(n: int) -> str:
+    return "".join(random.choice(string.ascii_letters) for i in range(n))
 
 
 class RabbitmqChannelLayer(BaseChannelLayer):
@@ -48,38 +107,52 @@ class RabbitmqChannelLayer(BaseChannelLayer):
     send another `remote_capacity` messages to RabbitMQ and then they'll start
     raising `ChannelFull`.
 
-    The `prefetch_count` determines the maximum number of messages we can
-    receive from RabbitMQ at a time. This makes `local_capacity` a bit of a
-    "loose" setting: if messages arrive quickly enough, we may end up with
-    `prefetch_count + local_capacity - 1` messages in memory.
-
     There is also an "expiry" parameter: this determines the minimum number of
-    seconds a message must remain in RabbitMQ before being culled.
+    seconds a message must remain in RabbitMQ before being culled. A similar
+    `local_expiry` determines the minimum amount of time a message must remain
+    in the channels_rabbitmq buffers before it is acked (and potentially not
+    delivered to all consumers).
 
     This layer does not implement "flush". To flush all state, simply
     disconnect all clients.
     """
+
+    extensions = ["groups"]
 
     def __init__(
         self,
         host="amqp://guest:guest@127.0.0.1/asgi",
         local_capacity=100,
         remote_capacity=100,
-        prefetch_count=10,
         expiry=60,
-        local_expiry=None,
+        local_expiry: Optional[float] = None,
         group_expiry=None,
         ssl_context=None,
         groups_exchange="groups",
     ):
         self.host = host
+        self.connect_timeout = 10.0  # seconds
         self.local_capacity = local_capacity
         self.remote_capacity = remote_capacity
-        self.prefetch_count = prefetch_count
         self.expiry = expiry
         self.local_expiry = local_expiry
         self.ssl_context = ssl_context
         self.groups_exchange = groups_exchange
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError(
+                """Refusing to initialize channel layer without a running event loop.
+
+If you're writing a django-channels Worker, channels_rabbitmq does not support
+this. Read the way to write workers in the carehare documentation.
+
+If you're calling `async_to_sync()`, the call must be within code run by
+`sync_to_async()`. Django Channels guarantees this for Django views. Elsewhere,
+beware: `asgiref` *does* let you to call `async_to_sync()` without
+`sync_to_async()`, but `channels_rabbitmq` *doesn't* -- hence this error."""
+            )
 
         if group_expiry is not None:
             warnings.warn(
@@ -91,90 +164,185 @@ class RabbitmqChannelLayer(BaseChannelLayer):
                 category=DeprecationWarning,
             )
 
-        # In inefficient client code (e.g., async_to_sync()), there may be
-        # several send() or receive() calls within different event loops --
-        # meaning callers might be coming from different threads at the same
-        # time. We'll use a threading.Lock() when absolutely necessary to
-        # maintain this dict of loop+connection.
-        self._connections_lock = threading.Lock()
-        self._connections = {}  # loop => Connection
-
-    extensions = ["groups"]
-
-    def _create_connection(self, loop):
-        """Start a new connection on the given event loop.
-
-        Wrap the event loop's close() with a connection.close() call.
-        """
         # Choose queue name here: that way we can declare it on RabbitMQ with
         # exclusive=True and have it survive reconnections.
-        rand = "".join(random.choice(string.ascii_letters) for i in range(12))
-        queue_name = "channels_{rand}".format(rand=rand)
+        self._queue_name = "channels_{rand}".format(rand=_random_letters(12))
 
-        connection = Connection(
-            loop,
-            self.host,
-            queue_name,
-            local_capacity=self.local_capacity,
-            remote_capacity=self.remote_capacity,
-            expiry=self.expiry,
-            local_expiry=self.local_expiry,
-            ssl_context=self.ssl_context,
-            groups_exchange=self.groups_exchange,
+        self._multi_queue = MultiQueue(capacity=local_capacity)
+        self._carehare_connection: asyncio.Future[
+            carehare.Connection
+        ] = asyncio.Future()
+        self._want_close: bool = False
+
+    @property
+    def carehare_connection(self) -> asyncio.Future[carehare.Connection]:
+        if self._want_close:
+            raise StopConsumer
+        if self._carehare_connection.get_loop() != asyncio.get_running_loop():
+            raise RuntimeError(
+                "The caller tried using channels_rabbitmq on a different event loop than the one it was initialized with."
+            )
+        if not self._want_close and not hasattr(self, "_reconnect_forever_task"):
+            self._reconnect_forever_task = asyncio.create_task(
+                self._reconnect_forever()
+            )
+            if self.local_expiry is not None:
+                self._expire_task = asyncio.create_task(
+                    self._multi_queue.expire_locally_until_closed(
+                        local_expiry=self.local_expiry
+                    )
+                )
+        return self._carehare_connection
+
+    async def _reconnect_forever(self):
+        """Maintain self._carehare_connection.
+
+        Cancel this task on event-loop shutdown (and at no other time). This
+        will make `self.carehare_connection` raise `asyncio.CancelledError`.
+        """
+        EXPECTED_EXCEPTIONS = (
+            carehare.ConnectionClosedByServer,
+            carehare.ConnectionClosedByHeartbeatMonitor,
+            OSError,
         )
-        self._connections[loop] = connection  # assume lock is held
 
-        original_impl = loop.close
-        manager = self
-
-        def _wrapper(self, *args, **kwargs):  # self = loop
-            # If the event loop was closed, there's nothing we can do anymore.
-            if not self.is_closed():
+        while not self._want_close:  # Reconnect (after disconnect) repeatedly
+            while not self._want_close:  # Retry initial connect repeatedly
                 try:
-                    self.run_until_complete(connection.close())
-                except asyncio.CancelledError:
-                    # asgiref 3.2.4+ kills the aioamqp "listen" task before
-                    # calling `loop.close()`. So `connection.close()` might
-                    # finish _sending_ a "close" to RabbitMQ ... but we're
-                    # doomed to see a CancelledError.
-                    # ref: https://github.com/django/asgiref/issues/145
-                    pass
+                    connection = carehare.Connection(
+                        url=self.host,
+                        connect_timeout=self.connect_timeout,
+                        ssl=self.ssl_context,
+                    )
+                    await connection.connect()
+                except (asyncio.TimeoutError, *EXPECTED_EXCEPTIONS) as err:
+                    logger.exception(
+                        "Failure connecting to RabbitMQ: %s. Retrying", str(err)
+                    )
+                    await asyncio.sleep(ReconnectDelay)
+                    connection = None  # in case _want_close=True
+                    continue  # retry
 
-            with manager._connections_lock:
-                if self in manager._connections:
-                    del manager._connections[self]
+                try:
+                    await _setup_connection(
+                        connection=connection,
+                        queue_name=self._queue_name,
+                        remote_capacity=self.remote_capacity,
+                        expiry=self.expiry,
+                        groups_exchange=self.groups_exchange,
+                    )
+                    await _setup_subscriptions(
+                        connection=connection,
+                        queue_name=self._queue_name,
+                        groups_exchange=self.groups_exchange,
+                        groups=self._multi_queue._local_groups.keys(),
+                    )
+                except (carehare.ChannelClosedByServer, *EXPECTED_EXCEPTIONS) as err:
+                    logger.exception(
+                        "Failure declaring RabbitMQ objects: %s. Will retry.",
+                        str(err),
+                    )
+                    await asyncio.sleep(ReconnectDelay)
+                    connection = None  # in case _want_close=True
+                    continue  # retry
 
-            # Restore the original close() implementation after we're done.
-            self.close = original_impl
-            return self.close(*args, **kwargs)
+                self._carehare_connection.set_result(connection)
+                logger.info("Connected to RabbitMQ")
+                break
 
-        loop.close = types.MethodType(_wrapper, loop)
+            if self._want_close:
+                break
 
-        return connection
+            try:
+                await consume_into_multi_queue_until_connection_close(
+                    connection=connection,
+                    channel=self._queue_name,
+                    multi_queue=self._multi_queue,
+                    prefetch_count=self.local_capacity,
+                )
+                await connection.closed
+            except EXPECTED_EXCEPTIONS as err:
+                logger.exception(
+                    "Disconnected from RabbitMQ: %s. Will reconnect.", str(err)
+                )
 
-    def _get_connection_for_loop(self, loop=None):
-        if loop is None:
-            loop = asyncio.get_event_loop()
+            self._carehare_connection = asyncio.Future()
+            try:
+                await connection.close()
+            except EXPECTED_EXCEPTIONS:
+                pass
+            connection = None
 
-        try:
-            return self._connections[loop]
-        except KeyError:
-            with self._connections_lock:
-                if loop not in self._connections:  # Test again, with a lock.
-                    self._connections[loop] = self._create_connection(loop)
+        if connection is not None:
+            try:
+                await connection.close()
+            except EXPECTED_EXCEPTIONS as err:
+                logger.exception(
+                    "Failure closing RabbitMQ connection: %s. Moving on....", str(err)
+                )
 
-                return self._connections[loop]
+    async def close(self):
+        """Close our RabbitMQ connection and all tasks.
+
+        This is not part of the Channel Layer Specification; but it should be a
+        part of every server's lifecycle.
+
+        After calling this, no more messages will be delivered. All pending and
+        future calls to `receive()` will raise `StopConsumer` (causing all
+        WebSockets clients to disconnect). Undelivered messages will be lost.
+
+        After this method returns, the RabbitMQ connection will be closed and
+        all internal tasks will be completed.
+        """
+
+        if not self._want_close:
+            self._want_close = True
+            self._multi_queue.close()
+
+            if hasattr(self, "_expire_task"):
+                self._expire_task.cancel()
+            if (
+                hasattr(self, "_reconnect_forever_task")
+                and self._carehare_connection.done()
+            ):
+                await self._carehare_connection.result().close()
+
+        if hasattr(self, "_expire_task"):
+            try:
+                await self._expire_task
+            except asyncio.CancelledError:
+                pass
+            if hasattr(self, "_expire_task"):
+                delattr(self, "_expire_task")
+
+        if hasattr(self, "_reconnect_forever_task"):
+            await self._reconnect_forever_task
+            if hasattr(self, "_reconnect_forever_task"):
+                delattr(self, "_reconnect_forever_task")
 
     async def send(self, channel, message):
         """Send a message onto a (general or specific) channel."""
-        assert isinstance(message, dict), "message is not a dict"
         assert self.valid_channel_name(channel), "Channel name not valid"
-        assert "__asgi_channel__" not in message
-        assert "__asgi_group__" not in message
         _assert_channel_is_reply_channel(channel)
 
-        connection = self._get_connection_for_loop()
-        await connection.send(channel, message)
+        logger.debug("send %r to %s", message, channel)
+
+        body = serialize_message(ChannelRecipient(channel), message)
+
+        connection = await self.carehare_connection
+
+        try:
+            await connection.publish(
+                body, exchange_name="", routing_key=channel.split("!")[0]
+            )
+        except carehare.ServerSentNack:
+            raise ChannelFull from None
+        except carehare.ConnectionClosed:
+            logger.warning(
+                "Failed to send message %r to %s because we disconnected",
+                message,
+                channel,
+            )
 
     async def receive(self, channel):
         """Receive the first message that arrives on the channel.
@@ -186,24 +354,14 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         # and thus its index
         assert self.valid_channel_name(channel)
         _assert_channel_is_reply_channel(channel)
-
-        connection = self._get_connection_for_loop()
-        return await connection.receive(channel)
+        assert channel.startswith(self._queue_name + "!")
+        return await self._multi_queue.get(channel)
 
     async def new_channel(self, prefix=""):
         """Create a new channel name that can be used by something in our
         process as a specific channel.
         """
-        connection = self._get_connection_for_loop()
-        return "!".join(
-            [
-                connection.queue_name,
-                (
-                    prefix
-                    + "".join(random.choice(string.ascii_letters) for i in range(12))
-                ),
-            ]
-        )
+        return "%s!%s" % (self._queue_name, _random_letters(12))
 
     async def group_add(self, group, channel):
         """Add the channel name to a group.
@@ -215,8 +373,31 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         assert self.valid_group_name(group), "Group name not valid"
         assert self.valid_channel_name(channel), "Channel name not valid"
 
-        connection = self._get_connection_for_loop()
-        await connection.group_add(group, channel)
+        # Connect, to make sure the next line doesn't happen during _setup_subscriptions()
+        connection = await self.carehare_connection
+
+        # Now, assume _setup_subscriptions() isn't running, so there's no race
+        # writing+reading self._multi_queue.
+        n_bindings = self._multi_queue.group_add(group, channel)
+        if n_bindings == 1:
+            logger.debug("Binding queue %s to group %s", self._queue_name, group)
+            # This group is new to our connection-level queue. Make a
+            # connection-level binding.
+
+            try:
+                await connection.queue_bind(
+                    queue_name=self._queue_name,
+                    exchange_name=self.groups_exchange,
+                    routing_key=group,
+                )
+            except carehare.ChannelClosedByServer as err:
+                logger.exception(
+                    "RabbitMQ refused to bind: %s. Messages to group %s will not reach clients on this server.",
+                    str(err),
+                    group,
+                )
+            except carehare.ConnectionClosed:
+                pass  # we'll queue_bind() during reconnect
 
     async def group_discard(self, group, channel):
         """Remove the channel from the named group if it is in the group;
@@ -229,15 +410,54 @@ class RabbitmqChannelLayer(BaseChannelLayer):
         assert self.valid_group_name(group), "Group name not valid"
         assert self.valid_channel_name(channel), "Channel name not valid"
 
-        connection = self._get_connection_for_loop()
-        await connection.group_discard(group, channel)
+        # Connect, to make sure the next line doesn't happen during _setup_subscriptions()
+        connection = await self.carehare_connection
+
+        # Now, assume _setup_subscriptions() isn't running, so there's no race
+        # writing+reading self._multi_queue.
+        n_bindings = self._multi_queue.group_discard(group, channel)
+        if n_bindings == 0:
+            logger.debug("Unbinding queue %s from group %s", self._queue_name, group)
+            try:
+                await connection.queue_unbind(
+                    queue_name=self._queue_name,
+                    exchange_name=self.groups_exchange,
+                    routing_key=group,
+                )
+            except carehare.ChannelClosedByServer as err:
+                logger.exception(
+                    "RabbitMQ refused to unbind from group %s: %s. This suggests a bug somewhere.",
+                    str(err),
+                    group,
+                )
+            except carehare.ConnectionClosed:
+                pass  # after reconnect, we're unbound anyway
 
     async def group_send(self, group, message):
         """Send a message to the entire group."""
-        assert isinstance(message, dict), "message is not a dict"
         assert self.valid_group_name(group), "Group name not valid"
-        assert "__asgi_channel__" not in message
-        assert "__asgi_group__" not in message
 
-        connection = self._get_connection_for_loop()
-        await connection.group_send(group, message)
+        logger.debug("group_send %r to %s", message, group)
+
+        body = serialize_message(GroupRecipient(group), message)
+
+        connection = await self.carehare_connection
+
+        try:
+            await connection.publish(
+                body, exchange_name=self.groups_exchange, routing_key=group
+            )
+        except carehare.ServerSentNack:
+            # "Sending to a group never raises ChannelFull; instead, it must
+            # silently drop the message if it is over capacity, as per ASGI’s
+            # at-most-once delivery policy."
+            # https://channels.readthedocs.io/en/stable/channel_layer_spec.html#capacity
+            #
+            # ... let's at least _warn_....
+            logger.warning("Aborting send to group %s: a queue is at capacity", group)
+        except carehare.ConnectionClosed:
+            logger.warning(
+                "Failed to send message %r to group %s because we disconnected",
+                message,
+                group,
+            )

@@ -1,3 +1,31 @@
+v3.0.0 - 2021-02-25
+~~~~~~~~~~~~~~~~~~~
+
+* Drop support for ``async_to_sync()`` without ``sync_to_async()``. If you have
+  been using channels_rabbitmq to open a new RabbitMQ connection per
+  message, you'll now get a RuntimeError.
+  `Rationale <https://github.com/CJWorkbench/channels_rabbitmq/issues/28#issuecomment-734334065>`_
+* Switched to `carehare <https://github.com/CJWorkbench/carehare>`_, so now we:
+    * Expose errors. An error in the channel layers will be logged. (Previously,
+      it could lead to a frozen layer.)
+    * Release unawaited tasks and futures. Now, callers must await all futures.
+      (Previously, there were missing warnings when callers didn't await.)
+    * Expose ``get_channel_layer().carehare_connection``: a Future Connection.
+      (It resets to a new Future upon disconnect.)
+* Added ``await get_channel_layer().close()``, for clean shutdowns. On shutdown,
+  all consumers will see ``StopConsuming``. (This is not in the Channel Layers
+  Specification.)
+* Stopped monkey-patching event-loop close. Now, ending the Python process
+  without calling ``await get_channel_layer().close()`` may warn about unawaited
+  coroutines. Use ASGI Lifespan to fix the warnings.
+
+**Upgrade instructions from v2.x**
+
+* Upgrade to **Python 3.8 or higher**.
+* Ensure your ``host`` and ``ssl_context`` agree. If you use ``ssl_context``,
+  your ``host`` must begin with ``amqps://``; otherwise, ``amqp://``.
+* Ensure you do not call ``async_to_sync()`` outside of ``sync_to_async()``.
+
 v2.0.0 - 2021-01-08
 ~~~~~~~~~~~~~~~~~~~
 
