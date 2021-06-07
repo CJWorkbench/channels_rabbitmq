@@ -37,6 +37,36 @@ async def _setup_connection(
     # (such as on reconnect) are harmless.
     await connection.exchange_declare(groups_exchange, exchange_type="direct")
 
+    # If we're reconnecting to RabbitMQ Node B after Node A disconnected us, our
+    # previously-declared exclusive queue may still exist.
+    #
+    # Wait for any previously-declared queue to disappear.
+    #
+    #     [adamhooper, 2021-06-07] I'm not 100% sure this can actually happen.
+    #     We got an error that _looks_ like this on production; we'd expect
+    #     "resource-locked" from RabbitMQ, and instead we got successful
+    #     queue_declare() and then the queue didn't exist afterwards.)
+    #
+    #     ... but the spec doesn't seem to deny the possibility: "The client
+    #     MAY NOT attempt to use a queue that was declared as exclusive by
+    #     another still-open connection." Doesn't say anything about queues
+    #     declared as exclusive by another _closed_ connection.
+    #
+    #     If our woes persist, or if we go 1yr without seeing this message in
+    #     our logs, delete this block because we'll know it serves no purpose.
+    try:
+        while await connection.queue_declare(queue_name, passive=True):
+            # TODO test using a whole RabbitMQ cluster, to expose this bug and
+            # test this solution.
+            logger.warn(
+                "Queue %s already declared; waiting 1s for RabbitMQ to delete it"
+                queue_name,
+            )
+            await asyncio.sleep(1)
+    except carehare.ChannelClosedByServer as err:
+        if err.reply_code != 404:
+            raise
+
     arguments = {}
     if remote_capacity is not None:
         arguments["x-max-length"] = remote_capacity
