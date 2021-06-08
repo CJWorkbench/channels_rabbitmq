@@ -119,8 +119,7 @@ Defaults to ``"groups"``. See also `Design decisions`_.
 Accessing Carehare
 ------------------
 
-We use `carehare
-<https://github.com/CJWorkbench/carehare>`_ for its thorough handling of errors.
+We use `carehare`_ for its thorough handling of errors.
 
 Django Channels' specification does not account for "connecting" and
 "disconnecting". This layer does its best by constantly reconnecting, forever.
@@ -143,6 +142,57 @@ When a disconnect occurs, all pending operations on that connection will raise
 ``carehare.ConnectionClosed``. This channel layer will log the error, and
 ``get_channel_layer().carehare_connection`` will point to a new Future. (This
 error+reconnect is *guaranteed to happen* in production.)
+
+Publish messages from Celery
+----------------------------
+
+Many `Celery
+<https://docs.celeryproject.org/en/stable/getting-started/introduction.html>`_
+users want to send messages to websockets users.
+
+This is doable, though not intuitive. Don't use any Django Channels code:
+Channels layers depend on long-running connections, and Celery bans those.
+Same goes for carehare: don't use it from Celery.
+
+Instead, from a Celery-worker ``@task`` you can send messages to your
+Django-Channels consumers using Celery's RabbitMQ connection::
+
+    from typing import Any, Dict
+
+    import msgpack
+
+    def publish_message_to_group(message: Dict[str, Any], group: str) -> None:
+        with current_app.producer_pool.acquire(block=True) as producer:
+            producer.publish(
+                msgpack.packb({
+                  "__asgi__group": group,
+                  **message,
+                }),
+                exchange="groups",  # groups_exchange
+                content_encoding="binary",
+                routing_key=group,
+                retry=False,  # Channel Layer at-most once semantics
+            )
+
+To call it, from a Celery-worker ``@task``...::
+
+    publish_message_to_group({ "type": "chat.message", "text": "hi" }, "a-group")
+
+... and a Django-Channels consumer like this will receive it::
+
+    class WebsocketConnectionConsumer(AsyncWebsocketConsumer):
+        async def connect(self):
+            await self.channel_layer.group_add("a-group", self.channel_name)
+
+        async def disconnect(self):
+            await self.channel_layer.group_discard("a-group", self.channel_name)
+
+        async def chat_message(self, event):
+            assert event["text"] == "hi"
+
+Alternatively, write your workers asynchronously, directly in `carehare`_.
+It's more lightweight and faster than Celery, and the error handling is
+simpler.
 
 Design decisions
 ----------------
@@ -201,6 +251,9 @@ differences:
 
   If you want an async, RabbitMQ-based job queue, investigate `carehare
   <https://github.com/CJWorkbench/carehare>`_.
+
+  If you're using Celery with the same RabbitMQ server, you can `publish
+  messages from Celery`_, too.
 
 Dependencies
 ------------
