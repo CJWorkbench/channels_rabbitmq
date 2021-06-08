@@ -1,3 +1,16 @@
+v4.0.0 - 2021-06-08
+~~~~~~~~~~~~~~~~~~~
+
+* Try and forestall an error during reconnect. Connecting to RabbitMQ Node B
+  after Node A went offline sometimes led to ``group_add()`` failures.
+* Bump carehare to v1.0.0
+
+**Upgrade instructions from v3.x**
+
+* In accordance with RabbitMQ's URI specification, ``/`` is no longer allowed
+  as the last character in an ``amqp`` URL. If your ``host`` ends with ``/``,
+  delete the ``/``.
+
 v3.0.0 - 2021-02-25
 ~~~~~~~~~~~~~~~~~~~
 

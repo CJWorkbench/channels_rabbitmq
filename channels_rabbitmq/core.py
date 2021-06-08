@@ -38,31 +38,40 @@ async def _setup_connection(
     await connection.exchange_declare(groups_exchange, exchange_type="direct")
 
     # If we're reconnecting to RabbitMQ Node B after Node A disconnected us, our
-    # previously-declared exclusive queue may still exist.
+    # previously-declared exclusive queue may still exist but _won't_ raise a
+    # "resource-locked" error.
     #
-    # Wait for any previously-declared queue to disappear.
+    # [adamhooper, 2021-06-07] I'm not 100% sure this can actually happen. We
+    # saw a problem that _looks_ like this on production, twice, when we
+    # upgraded our node pools. The `queue_declare()` succeeded, but subsequent
+    # `group_add()` operations failed because the queue did not exist. My theory
+    # is: halfway along the way to deleting the exclusive queue, queue_declare()
+    # succeeds, because maybe there's a race when deleting an exclusive queue in
+    # which it appears non-exclusive to other nodes before it's deleted?
     #
-    #     [adamhooper, 2021-06-07] I'm not 100% sure this can actually happen.
-    #     We got an error that _looks_ like this on production; we'd expect
-    #     "resource-locked" from RabbitMQ, and instead we got successful
-    #     queue_declare() and then the queue didn't exist afterwards.)
+    # ... this guess doesn't _literally_ violate the spec: "The client MAY NOT
+    # attempt to use a queue that was declared as exclusive by another
+    # still-open connection." Doesn't say anything about queues declared as
+    # exclusive by another _closed_ connection on another node.
     #
-    #     ... but the spec doesn't seem to deny the possibility: "The client
-    #     MAY NOT attempt to use a queue that was declared as exclusive by
-    #     another still-open connection." Doesn't say anything about queues
-    #     declared as exclusive by another _closed_ connection.
-    #
-    #     If our woes persist, or if we go 1yr without seeing this message in
-    #     our logs, delete this block because we'll know it serves no purpose.
+    # If our woes persist, or if we go 1yr without seeing this message in
+    # our logs, delete this block because we'll know it serves no purpose.
+    # If, 1yr from now, we've solved our problem, let's build a reproduction
+    # and report this upstream.
     try:
-        while await connection.queue_declare(queue_name, passive=True):
-            # TODO test using a whole RabbitMQ cluster, to expose this bug and
-            # test this solution.
-            logger.warn(
-                "Queue %s already declared; waiting 1s for RabbitMQ to delete it"
-                queue_name,
-            )
-            await asyncio.sleep(1)
+        await connection.queue_declare(queue_name, passive=True)
+        # If we got here, the queue exists. The `queue_declare()` _below_ ought
+        # to raise a 405 error if the queue still exists by the time we call it;
+        # but we're guessing it might not, and there's no harm in raising the
+        # same error ourselves.
+        #
+        # This exception will lead to a log message and a reconnect.
+        #
+        # TODO test using a whole RabbitMQ cluster, to expose this bug and
+        # test this solution.
+        raise carehare.ChannelClosedByServer(
+            405, "channels_rabbitmq refusing to redeclare queue %s" % queue_name
+        )
     except carehare.ChannelClosedByServer as err:
         if err.reply_code != 404:
             raise

@@ -10,7 +10,7 @@ from channels.exceptions import ChannelFull, StopConsumer
 
 from channels_rabbitmq.core import RabbitmqChannelLayer, ReconnectDelay
 
-HOST = "amqps://guest:guest@localhost/"
+HOST = "amqps://guest:guest@localhost"
 SSL_CONTEXT = ssl.create_default_context(
     cafile=str(Path(__file__).parent.parent / "ssl" / "server.cert")
 )
@@ -511,7 +511,7 @@ async def test_log_connection_refused(caplog):
     the channel layer isn't sending messages.
     """
     async with open_layer(
-        queue_name="x", host="amqp://guest:guest@localhost:4561/", ssl_context=None
+        queue_name="x", host="amqp://guest:guest@localhost:4561", ssl_context=None
     ) as layer:
         # 0.5s: Enough time to try connecting once
         await asyncio.wait({layer.carehare_connection}, timeout=0.5)
