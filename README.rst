@@ -165,7 +165,7 @@ Django-Channels consumers using Celery's RabbitMQ connection::
         with current_app.producer_pool.acquire(block=True) as producer:
             producer.publish(
                 msgpack.packb({
-                  "__asgi__group": group,
+                  "__asgi_group__": group,
                   **message,
                 }),
                 exchange="groups",  # groups_exchange
