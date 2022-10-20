@@ -9,7 +9,7 @@ Does not support `Worker and Background Tasks
 <https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070>`_
 and use ``await get_channel_layer().current_connection`` to send to job queues.)
 
-Works with Python 3.8 or 3.9.
+Works with Python 3.8, 3.9, 3.10
 
 Installation
 ------------

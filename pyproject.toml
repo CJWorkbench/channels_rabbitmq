@@ -12,16 +12,16 @@ readme = "README.rst"
 
 [tool.poetry.dependencies]
 carehare = "~=1.0"
-channels = "~=3.0"
+channels = ">=3.0,<5"
 msgpack = "~=1.0"
-python = "~=3.8"
+python = ">=3.8,<3.11"
 
 [tool.poetry.dev-dependencies]
-pytest = "~=6.1"
-pytest-asyncio = "~=0.14"
-pytest-cov = "~= 2.10"
-pytest-timeout = "~= 1.4"
-asgiref = "~=3.1"
+pytest = ">=6.1,<8"
+pytest-asyncio = ">=0.14,<0.20"
+pytest-cov = ">=2.10,<5"
+pytest-timeout = ">=1.4,<2.2.0"
+asgiref = ">=3.1,<4"
 
 [tool.isort]
 # Black compatibility
@@ -36,7 +36,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py38,py39}-{pyflakes,black,isort,pytest}
+envlist = {py38,py39,py310}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
@@ -46,7 +46,7 @@ max-line-length = 88
 [testenv]
 skip_install = true
 deps =
-  pyflakes: pyflakes>=2.2
+  pyflakes: pyflakes>=2.5
   black: black
   isort: isort
   pytest: poetry
