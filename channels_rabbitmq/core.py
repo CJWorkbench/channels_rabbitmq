@@ -31,7 +31,7 @@ async def _setup_connection(
     queue_name: str,
     remote_capacity: Optional[int],
     expiry: Optional[int],
-    groups_exchange: str
+    groups_exchange: str,
 ) -> None:
     # Declare "groups" exchange. It may persist; spurious declarations
     # (such as on reconnect) are harmless.
@@ -95,7 +95,7 @@ async def _setup_subscriptions(
     connection: carehare.Connection,
     queue_name: str,
     groups_exchange: str,
-    groups: Iterable[str]
+    groups: Iterable[str],
 ) -> None:
     await gather_without_leaking(
         connection.queue_bind(
