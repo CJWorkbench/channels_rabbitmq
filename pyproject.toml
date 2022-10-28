@@ -1,5 +1,6 @@
 [build-system]
-requires = ["poetry_core>=1.0.0", "poetry-dynamic-versioning>=0.12.0"]
+# poetry-core 1.2.0-1.2.2 suffers from https://github.com/python-poetry/poetry/issues/6807
+requires = ["poetry_core>=1.0.0,<1.2"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
