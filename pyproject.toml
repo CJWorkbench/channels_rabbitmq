@@ -36,7 +36,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py38,py39}-{pyflakes,black,isort,pytest}
+envlist = {py38,py39,py310}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
