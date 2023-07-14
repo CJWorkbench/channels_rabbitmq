@@ -7,7 +7,7 @@ Does not support `Worker and Background Tasks
 <https://channels.readthedocs.io/en/stable/topics/worker.html>`_.
 (See `Rationale
 <https://github.com/CJWorkbench/channels_rabbitmq/pull/11#issuecomment-499185070>`_
-and use ``await get_channel_layer().current_connection`` to send to job queues.)
+and use ``await get_channel_layer().carehare_connection`` to send to job queues.)
 
 Works with Python 3.8 or 3.9.
 
@@ -124,7 +124,7 @@ We use `carehare`_ for its thorough handling of errors.
 Django Channels' specification does not account for "connecting" and
 "disconnecting". This layer does its best by constantly reconnecting, forever.
 
-Call ``await get_channel_layer().current_connection`` to access an open Carehare
+Call ``await get_channel_layer().carehare_connection`` to access an open Carehare
 connection. This lets you use job queues without "Worker and Background Tasks".
 Like this::
 
