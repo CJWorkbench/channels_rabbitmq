@@ -305,6 +305,27 @@ Now take on the development cycle:
 #. Write new code in ``channels_rabbitmq/`` to make the tests pass.
 #. Submit a pull request.
 
+If you have your local system RabbitMQ running on the same ports, use different ports starting the development RabbitMQ::
+
+    ssl/prepare-certs.sh  # Create SSL certificates used in tests
+    docker run --rm -it \
+         -p 5674:5671 \
+         -p 5675:5672 \
+         -p 15678:15672 \
+         -v "/$(pwd)"/ssl:/ssl \
+         -e RABBITMQ_SSL_CACERTFILE=/ssl/ca.cert \
+         -e RABBITMQ_SSL_CERTFILE=/ssl/server.cert \
+         -e RABBITMQ_SSL_KEYFILE=/ssl/server.key \
+         -e RABBITMQ_SSL_VERIFY=verify_peer \
+         -e RABBITMQ_SSL_FAIL_IF_NO_PEER_CERT=true \
+         rabbitmq:3.8.11-management-alpine
+
+(or whatever you would like to use)
+
+Then you need to pass the RabbitMQ endpoints explicitly in the environment::
+
+    AMQPS_HOST=amqps://guest:guest@localhost:5674 AMQP_HOST=amqp://guest:guest@localhost:5675 tox
+
 To deploy
 ~~~~~~~~~
 
