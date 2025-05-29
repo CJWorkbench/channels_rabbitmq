@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 import ssl
 import threading
 import time
@@ -10,7 +11,8 @@ from channels.exceptions import ChannelFull, StopConsumer
 
 from channels_rabbitmq.core import RabbitmqChannelLayer, ReconnectDelay
 
-HOST = "amqps://guest:guest@localhost"
+HOST = os.environ.get("AMQPS_HOST", "amqps://guest:guest@localhost")
+HOST2 = os.environ.get("AMQP_HOST", "amqp://guest:guest@localhost")
 SSL_CONTEXT = ssl.create_default_context(
     cafile=str(Path(__file__).parent.parent / "ssl" / "server.cert")
 )
@@ -527,9 +529,7 @@ async def test_no_ssl():
 
     Assumes the server is listening over both a TLS port and a no-TLS port.
     """
-    async with open_layer(
-        queue_name="x", host=HOST.replace("amqps://", "amqp://"), ssl_context=None
-    ) as layer:
+    async with open_layer(queue_name="x", host=HOST2, ssl_context=None) as layer:
         await layer.carehare_connection
 
 

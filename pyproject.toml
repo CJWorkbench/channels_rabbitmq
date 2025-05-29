@@ -37,7 +37,7 @@ legacy_tox_ini = """
 [tox]
 isolated_build = True
 skipsdist = True
-envlist = {py38,py39,py310}-{pyflakes,black,isort,pytest}
+envlist = {py38,py39,py310,py311,py312}-{pyflakes,black,isort,pytest}
 
 [flake8]
 exclude = venv/*,tox/*,specs/*,build/*
@@ -58,4 +58,7 @@ commands =
   black: black --check channels_rabbitmq tests
   isort: isort --check --diff channels_rabbitmq tests
   pytest: poetry run pytest --cov=channels_rabbitmq --cov-report term-missing -v
+setenv =
+  AMQPS_HOST={env:AMQPS_HOST:amqps://guest:guest@localhost}
+  AMQP_HOST={env:AMQP_HOST:amqp://guest:guest@localhost}
 """
