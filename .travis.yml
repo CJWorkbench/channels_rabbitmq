@@ -19,11 +19,12 @@ before_install:
   # Now it'll start up while we're doing our install. There's a race, but
   # it's extremely likely rabbitmq will be up before pytest starts.
   - python -m pip install poetry~=1.1.0 tox
-install: poetry install -v
-script: tox
 
 jobs:
   include:
+    - stage: test
+      install: poetry install -v
+      script: tox
     - stage: deploy
       python: "3.10"
       before_install: python -m pip install poetry
