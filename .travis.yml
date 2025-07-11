@@ -8,7 +8,7 @@ services:
 
 before_install:
   - sudo apt-get -y install libxml2-dev
-  - sudo add-apt-repository ppa:deadsnakes
+  - sudo add-apt-repository -y ppa:deadsnakes
   - sudo apt-get update
   - sudo apt-get -y install python3.9 python3.10 python3.11 python3.12 python3.13
   - ssl/prepare-certs.sh
