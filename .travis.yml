@@ -20,6 +20,9 @@ before_install:
   # it's extremely likely rabbitmq will be up before pytest starts.
   - python -m pip install poetry~=1.1.0 tox
 
+before_script:
+  sudo service rabbitmq stop
+
 jobs:
   include:
     - stage: test
