@@ -18,6 +18,7 @@ addons:
       - python3.13
 
 before_install:
+  - sudo apt-get -y install libxml2-dev
   - ssl/prepare-certs.sh
   # Use Docker rabbitmq instead of Travis'. Travis's gave us test failures
   # with our ChannelFull features, possibly because of feature differences.
