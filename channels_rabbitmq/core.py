@@ -208,9 +208,9 @@ beware: `asgiref` *does* let you to call `async_to_sync()` without
         self._queue_name = "channels_{rand}".format(rand=_random_letters(12))
 
         self._multi_queue = MultiQueue(capacity=local_capacity)
-        self._carehare_connection: asyncio.Future[
-            carehare.Connection
-        ] = asyncio.Future()
+        self._carehare_connection: asyncio.Future[carehare.Connection] = (
+            asyncio.Future()
+        )
         self._want_close: bool = False
 
     @property
