@@ -17,7 +17,7 @@ channels = ">=3.0,<5"
 msgpack = "~=1.0"
 python = "~=3.8"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "~=7.2"
 pytest-asyncio = "~=0.20"
 pytest-cov = "~=4.0"
