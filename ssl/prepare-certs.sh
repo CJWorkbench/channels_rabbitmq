@@ -10,7 +10,7 @@ rm -f ./*.{srl,csr,key,cert}
 # root-CA ("Certificate authority") key
 openssl genrsa -out ca.key 2048
 # root-CA certificate (server and client will trust this)
-openssl req -x509 -new -key ca.key -sha256 -days 9999 -out ca.cert -subj '/CN=localhost'
+openssl req -x509 -new -key ca.key -sha256 -days 9999 -out ca.cert -subj '/CN=localhost' -addext "keyUsage = digitalSignature, cRLSign, keyCertSign"
 
 # server key
 openssl genrsa -out server.key 2048

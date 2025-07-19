@@ -12,7 +12,7 @@ from channels_rabbitmq.core import RabbitmqChannelLayer, ReconnectDelay
 
 HOST = "amqps://guest:guest@localhost"
 SSL_CONTEXT = ssl.create_default_context(
-    cafile=str(Path(__file__).parent.parent / "ssl" / "server.cert")
+    cafile=str(Path(__file__).parent.parent / "ssl" / "ca.cert")
 )
 SSL_CONTEXT.load_cert_chain(
     certfile=str(Path(__file__).parent.parent / "ssl" / "client.certchain"),
