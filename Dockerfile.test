@@ -1,0 +1,25 @@
+# Test, with a single Docker command!
+# `docker build` => succeeds if tests pass
+FROM rabbitmq:4.1.2
+
+RUN apt-get update
+RUN apt-get install -y software-properties-common
+RUN add-apt-repository -y ppa:deadsnakes/ppa
+RUN apt-get install -y python3.10 python3.11 python3.12 python3.13 python3-pip python3-venv netcat-openbsd
+
+WORKDIR /src
+RUN python3 -mvenv /src/venv
+RUN venv/bin/python3 -mpip install --upgrade pip poetry setuptools tox
+
+ADD pyproject.toml /src
+
+RUN venv/bin/tox --notest run
+
+ADD pyproject.toml poetry.lock README.rst /src
+ADD channels_rabbitmq /src/channels_rabbitmq
+ADD tests /src/tests
+
+ADD ssl /src/ssl
+ADD test-rabbitmq.conf /etc/rabbitmq/rabbitmq.conf
+
+RUN bash -c 'ssl/prepare-certs.sh && (rabbitmq-server - & ((while ! nc -z localhost 5671; do sleep 0.1; done) && (while ! nc -z localhost 5672; do sleep 0.1; done) && venv/bin/tox))'

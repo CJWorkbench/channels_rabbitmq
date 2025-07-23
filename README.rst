@@ -303,6 +303,7 @@ Now take on the development cycle:
 #. ``tox`` # to ensure tests pass.
 #. Write new tests in ``tests/`` and make sure they fail.
 #. Write new code in ``channels_rabbitmq/`` to make the tests pass.
+#. Run ``docker build . -f Dockerfile.test`` to test all Python versions.
 #. Submit a pull request.
 
 To deploy

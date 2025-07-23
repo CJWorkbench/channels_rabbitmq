@@ -1,0 +1,18 @@
+Dockerfile.test
+.dockerignore
+.gitignore
+.git/
+
+# from .gitignore
+.eggs/
+*.egg-info/
+.pytest_cache/
+*.pyc
+__pycache__/
+ssl/*.cert
+ssl/*.certchain
+ssl/*.csr
+ssl/*.key
+ssl/*.srl
+.tox/
+.coverage
