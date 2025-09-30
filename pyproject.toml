@@ -8,7 +8,7 @@ name = "channels_rabbitmq"
 version = "0.0.0"
 description = "RabbitMQ-based ASGI channel layer implementation"
 authors = ["Adam Hooper <adam@adamhooper.com>"]
-license = "BSD"
+license = "MIT"
 readme = "README.rst"
 
 [tool.poetry.dependencies]
